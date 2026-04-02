@@ -1,3 +1,4 @@
+from __future__ import annotations
 """OrcaFish ReportAgent — assembles multi-engine reports into final HTML."""
 import re
 from datetime import datetime

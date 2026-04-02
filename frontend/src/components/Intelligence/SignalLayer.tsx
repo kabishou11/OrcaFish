@@ -44,9 +44,9 @@ export function getSignalTooltip(info: PickingInfo): string | null {
   if (!info.object) return null
   const s = info.object as Signal
   const color = SIGNAL_COLORS[s.type] || SIGNAL_COLORS.default
-  return `<div style="background:rgba(7,9,15,0.95);border:1px solid rgb(${color.join(',')});border-radius:4px;padding:8px;font-family:monospace;font-size:11px;color:#dce8f5">
+  return `<div style="background:#f0f4f8;border:1px solid rgb(${color.join(',')});border-radius:4px;padding:8px;font-family:monospace;font-size:11px;color:#1a2332">
     <b style="color:rgb(${color.join(',')})">${s.type.toUpperCase()}</b><br/>
-    Intensity: ${s.intensity || 'N/A'}<br/>
-    ${s.timestamp ? `Time: ${new Date(s.timestamp).toLocaleString()}` : ''}
+    强度: ${s.intensity || 'N/A'}<br/>
+    ${s.timestamp ? `时间: ${new Date(s.timestamp).toLocaleString()}` : ''}
   </div>`
 }

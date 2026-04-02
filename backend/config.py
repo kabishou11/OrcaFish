@@ -36,8 +36,15 @@ class Settings(BaseSettings):
     insight_llm: LLMSettings = LLMSettings()
     report_llm: LLMSettings = LLMSettings()
 
-    # ── Knowledge Graph ─────────────────────────────────
+    # ── Knowledge Graph — Zep CE (本地 Docker) ──────────
+    # Cloud key 保留做回退，本地优先
     zep_api_key: str = ""
+    zep_base_url: str = "http://localhost:8000"   # Zep CE 服务地址
+    zep_api_secret: str = ""                       # zep.yaml 中 api_secret
+
+    # ── Crawl4AI 本地服务 ────────────────────────────────
+    crawl4ai_base_url: str = "http://localhost:11235"
+    crawl4ai_token: str = ""                       # 若 config.yml 配了 JWT
 
     # ── Data Sources ───────────────────────────────────
     upstash_redis_rest_url: str = ""

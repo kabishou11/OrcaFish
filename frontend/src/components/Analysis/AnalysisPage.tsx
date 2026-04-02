@@ -14,25 +14,25 @@ function SentimentChart({ query }: { query: string }) {
 
     // Generate mock sentiment data based on query
     const sentimentData = [
-      { name: '支持 / 正面', value: 35 + Math.floor(Math.random() * 15), itemStyle: { color: '#44ff88' } },
-      { name: '中立 / 观望', value: 25 + Math.floor(Math.random() * 10), itemStyle: { color: '#5eb8ff' } },
-      { name: '质疑 / 反对', value: 20 + Math.floor(Math.random() * 15), itemStyle: { color: '#ff3b5c' } },
-      { name: '恐慌 / 焦虑', value: 8 + Math.floor(Math.random() * 8), itemStyle: { color: '#ff8c42' } },
+      { name: '支持 / 正面', value: 35 + Math.floor(Math.random() * 15), itemStyle: { color: '#16a34a' } },
+      { name: '中立 / 观望', value: 25 + Math.floor(Math.random() * 10), itemStyle: { color: '#2563eb' } },
+      { name: '质疑 / 反对', value: 20 + Math.floor(Math.random() * 15), itemStyle: { color: '#dc2626' } },
+      { name: '恐慌 / 焦虑', value: 8 + Math.floor(Math.random() * 8), itemStyle: { color: '#f97316' } },
     ]
 
     const option: echarts.EChartsOption = {
       backgroundColor: 'transparent',
-      tooltip: { trigger: 'item', backgroundColor: 'rgba(7,9,15,0.92)', borderColor: 'var(--border-bright)', textStyle: { color: '#dce8f5', fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 } },
-      legend: { bottom: 0, textStyle: { color: '#7a92a8', fontSize: 11, fontFamily: "'IBM Plex Mono', monospace" } },
+      tooltip: { trigger: 'item', backgroundColor: 'rgba(255,255,255,0.97)', borderColor: '#e2e8f0', textStyle: { color: '#1a2332', fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 } },
+      legend: { bottom: 0, textStyle: { color: '#8fa3b8', fontSize: 11, fontFamily: "'IBM Plex Mono', monospace" } },
       series: [{
         type: 'pie', radius: ['42%', '70%'], center: ['50%', '45%'],
         avoidLabelOverlap: true,
-        itemStyle: { borderRadius: 6, borderColor: '#07090f', borderWidth: 2 },
-        label: { show: true, color: '#dce8f5', fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", formatter: '{b}\n{d}%' },
-        labelLine: { lineStyle: { color: 'rgba(94,184,255,0.4)' } },
+        itemStyle: { borderRadius: 6, borderColor: '#f0f4f8', borderWidth: 2 },
+        label: { show: true, color: '#4a5d73', fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", formatter: '{b}\n{d}%' },
+        labelLine: { lineStyle: { color: 'rgba(37,99,235,0.3)' } },
         data: sentimentData,
         emphasis: {
-          itemStyle: { shadowBlur: 12, shadowColor: 'rgba(94,184,255,0.4)' },
+          itemStyle: { shadowBlur: 12, shadowColor: 'rgba(37,99,235,0.2)' },
           scale: true, scaleSize: 6,
         },
       }],
@@ -65,17 +65,17 @@ function CIITrendChart() {
     const option: echarts.EChartsOption = {
       backgroundColor: 'transparent',
       tooltip: {
-        trigger: 'axis', backgroundColor: 'rgba(7,9,15,0.92)', borderColor: 'var(--border-bright)',
-        textStyle: { color: '#dce8f5', fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 },
-        axisPointer: { lineStyle: { color: 'rgba(94,184,255,0.3)' } },
+        trigger: 'axis', backgroundColor: 'rgba(255,255,255,0.97)', borderColor: '#e2e8f0',
+        textStyle: { color: '#1a2332', fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 },
+        axisPointer: { lineStyle: { color: 'rgba(37,99,235,0.2)' } },
       },
-      legend: { top: 0, right: 0, textStyle: { color: '#7a92a8', fontSize: 10, fontFamily: "'IBM Plex Mono', monospace" } },
+      legend: { top: 0, right: 0, textStyle: { color: '#8fa3b8', fontSize: 10, fontFamily: "'IBM Plex Mono', monospace" } },
       grid: { left: 38, right: 12, top: 28, bottom: 28 },
-      xAxis: { type: 'category', data: days, axisLine: { lineStyle: { color: '#1c2d40' } }, axisLabel: { color: '#3d5266', fontSize: 10, fontFamily: "'IBM Plex Mono', monospace" }, splitLine: { show: false } },
+      xAxis: { type: 'category', data: days, axisLine: { lineStyle: { color: '#e2e8f0' } }, axisLabel: { color: '#8fa3b8', fontSize: 10, fontFamily: "'IBM Plex Mono', monospace" }, splitLine: { show: false } },
       yAxis: {
         type: 'value', min: 0, max: 100,
-        axisLine: { show: false }, axisLabel: { color: '#3d5266', fontSize: 10, fontFamily: "'IBM Plex Mono', monospace" },
-        splitLine: { lineStyle: { color: '#1c2d40', type: 'dashed' } },
+        axisLine: { show: false }, axisLabel: { color: '#8fa3b8', fontSize: 10, fontFamily: "'IBM Plex Mono', monospace" },
+        splitLine: { lineStyle: { color: '#e2e8f0', type: 'dashed' } },
       },
       series: [
         {
@@ -109,7 +109,7 @@ function CIITrendChart() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
       <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>CII 趋势</div>
-      <div ref={chartRef} style={{ width: '100%', height: 180 }} />
+      <div ref={chartRef} style={{ width: '100%', height: 220 }} />
     </div>
   )
 }
@@ -125,19 +125,19 @@ function MediaFlowSankey() {
 
     const option: echarts.EChartsOption = {
       backgroundColor: 'transparent',
-      tooltip: { trigger: 'item', backgroundColor: 'rgba(7,9,15,0.92)', borderColor: 'var(--border-bright)', textStyle: { color: '#dce8f5', fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 } },
+      tooltip: { trigger: 'item', backgroundColor: 'rgba(255,255,255,0.97)', borderColor: '#e2e8f0', textStyle: { color: '#1a2332', fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 } },
       series: [{
         type: 'sankey',
         emphasis: { focus: 'adjacency' },
         nodeAlign: 'justify',
         lineStyle: { color: 'gradient', curveness: 0.5 },
         data: [
-          { name: '官方发布', itemStyle: { color: '#5eb8ff' } },
-          { name: '主流媒体', itemStyle: { color: '#44ff88' } },
-          { name: '自媒体', itemStyle: { color: '#ffd166' } },
-          { name: '社交平台', itemStyle: { color: '#ff8c42' } },
+          { name: '官方发布', itemStyle: { color: '#2563eb' } },
+          { name: '主流媒体', itemStyle: { color: '#16a34a' } },
+          { name: '自媒体', itemStyle: { color: '#d97706' } },
+          { name: '社交平台', itemStyle: { color: '#f97316' } },
           { name: '意见领袖', itemStyle: { color: '#c084fc' } },
-          { name: '普通用户', itemStyle: { color: '#7a92a8' } },
+          { name: '普通用户', itemStyle: { color: '#8fa3b8' } },
         ],
         links: [
           { source: '官方发布', target: '主流媒体', value: 45 },
@@ -149,7 +149,7 @@ function MediaFlowSankey() {
           { source: '社交平台', target: '普通用户', value: 35 },
         ],
         itemStyle: { borderWidth: 0 },
-        label: { color: '#dce8f5', fontFamily: "'IBM Plex Mono', monospace", fontSize: 10 },
+        label: { color: '#4a5d73', fontFamily: "'IBM Plex Mono', monospace", fontSize: 10 },
       }],
     }
 
@@ -181,25 +181,25 @@ function KeywordChart() {
 
     const option: echarts.EChartsOption = {
       backgroundColor: 'transparent',
-      tooltip: { trigger: 'axis', backgroundColor: 'rgba(7,9,15,0.92)', borderColor: 'var(--border-bright)', textStyle: { color: '#dce8f5', fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 }, axisPointer: { type: 'shadow' } },
+      tooltip: { trigger: 'axis', backgroundColor: 'rgba(255,255,255,0.97)', borderColor: '#e2e8f0', textStyle: { color: '#1a2332', fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 }, axisPointer: { type: 'shadow' } },
       grid: { left: 8, right: 16, top: 8, bottom: 8 },
       xAxis: { show: false },
-      yAxis: { type: 'category', data: keywords, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#7a92a8', fontSize: 10, fontFamily: "'IBM Plex Mono', monospace" }, splitLine: { show: false } },
+      yAxis: { type: 'category', data: keywords, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#8fa3b8', fontSize: 10, fontFamily: "'IBM Plex Mono', monospace" }, splitLine: { show: false } },
       series: [{
         type: 'bar',
         data: values.map((v, i) => ({
           value: v,
           itemStyle: {
             color: new graphic.LinearGradient(0, 0, 1, 0, [
-              { offset: 0, color: ['#ff3b5c', '#ff8c42', '#ffd166', '#44ff88', '#5eb8ff', '#c084fc', '#ff3b5c', '#ffd166'][i] },
-              { offset: 1, color: ['rgba(255,59,92,0.4)', 'rgba(255,140,66,0.4)', 'rgba(255,209,102,0.4)', 'rgba(68,255,136,0.4)', 'rgba(94,184,255,0.4)', 'rgba(192,132,252,0.4)', 'rgba(255,59,92,0.4)', 'rgba(255,209,102,0.4)'][i] },
+              { offset: 0, color: ['#dc2626', '#f97316', '#d97706', '#16a34a', '#2563eb', '#c084fc', '#dc2626', '#d97706'][i] },
+              { offset: 1, color: ['rgba(220,38,38,0.3)', 'rgba(249,115,22,0.3)', 'rgba(217,119,6,0.3)', 'rgba(22,163,74,0.3)', 'rgba(37,99,235,0.3)', 'rgba(192,132,252,0.3)', 'rgba(220,38,38,0.3)', 'rgba(217,119,6,0.3)'][i] },
             ]),
           },
         })),
         barWidth: 10,
-        label: { show: true, position: 'right', color: '#3d5266', fontSize: 9, fontFamily: "'IBM Plex Mono', monospace" },
+        label: { show: true, position: 'right', color: '#8fa3b8', fontSize: 9, fontFamily: "'IBM Plex Mono', monospace" },
         showBackground: true,
-        backgroundStyle: { color: '#1c2d40', borderRadius: 3 },
+        backgroundStyle: { color: '#e2e8f0', borderRadius: 3 },
         itemStyle: { borderRadius: [0, 3, 3, 0] },
       }],
     }
@@ -218,19 +218,33 @@ function KeywordChart() {
   )
 }
 
+// ── Agent status type ─────────────────────────────────────────────────────────
+type AgentStatus = 'idle' | 'running' | 'done'
+
+const AGENTS = [
+  { name: '搜索代理体', desc: '全网检索与线索发现', icon: 'query' as const, color: '#2563eb' },
+  { name: '媒体代理体', desc: '正文抽取与媒体脉络整理', icon: 'media' as const, color: '#16a34a' },
+  { name: '洞察代理体', desc: '情绪变化与观点结构分析', icon: 'insight' as const, color: '#d97706' },
+] as const
+
 // ── Main Analysis Page ────────────────────────────────────────────────────────
 export default function AnalysisPage() {
-  // Use location key to prevent state corruption on navigation
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const result = useAnalysisStore((s) => s.result)
   const setResult = useAnalysisStore((s) => s.setResult)
   const [error, setError] = useState<string | null>(null)
+  const [agentStatuses, setAgentStatuses] = useState<AgentStatus[]>(['idle', 'idle', 'idle'])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!query.trim()) return
     setLoading(true); setError(null); setResult(null)
+    // Stagger agent activation for visual effect
+    setAgentStatuses(['running', 'idle', 'idle'])
+    setTimeout(() => setAgentStatuses(s => [s[0], 'running', s[2]]), 600)
+    setTimeout(() => setAgentStatuses(s => [s[0], s[1], 'running']), 1200)
+
     try {
       const res = await fetch('/api/analysis/trigger', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -242,6 +256,7 @@ export default function AnalysisPage() {
       if (data.task_id) pollResult(data.task_id)
     } catch (err) {
       setError(err instanceof Error ? err.message : '未知错误')
+      setAgentStatuses(['idle', 'idle', 'idle'])
     } finally { setLoading(false) }
   }
 
@@ -253,7 +268,10 @@ export default function AnalysisPage() {
         if (res.ok) {
           const data: AnalysisResult = await res.json()
           setResult(data)
-          if (data.status === 'completed' || data.status === 'failed') break
+          if (data.status === 'completed' || data.status === 'failed') {
+            setAgentStatuses(['done', 'done', 'done'])
+            break
+          }
         }
       } catch { break }
     }
@@ -261,16 +279,29 @@ export default function AnalysisPage() {
 
   const statusBadge = (status: string) => {
     const cls = status === 'completed' ? 'badge-done' : status === 'failed' ? 'badge-failed' : 'badge-active'
-    return <span className={`badge ${cls}`}><span className="badge-dot" />{status.toUpperCase()}</span>
+    const statusLabels: Record<string, string> = { completed: '已完成', failed: '失败', running: '进行中', created: '已创建' }
+    return <span className={`badge ${cls}`}><span className="badge-dot" />{statusLabels[status] ?? status}</span>
+  }
+
+  const agentStatusLabel = (s: AgentStatus) => {
+    if (s === 'idle') return '就绪'
+    if (s === 'running') return '运行中'
+    return '完成'
+  }
+
+  const agentStatusDotColor = (s: AgentStatus) => {
+    if (s === 'idle') return '#8fa3b8'
+    if (s === 'running') return '#f59e0b'
+    return '#16a34a'
   }
 
   const inputStyle = (focused = false) => ({
-    width: '100%', padding: '10px 14px',
-    backgroundColor: 'var(--bg-base)', border: `1px solid ${focused ? 'var(--accent)' : 'var(--border-bright)'}`,
+    width: '100%', padding: '12px 16px',
+    backgroundColor: 'var(--bg-surface)', border: `1.5px solid ${focused ? 'var(--accent)' : 'var(--border)'}`,
     borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)',
-    fontFamily: 'inherit', fontSize: '0.875rem', resize: 'vertical' as const, outline: 'none',
+    fontFamily: 'inherit', fontSize: '0.9rem', resize: 'vertical' as const, outline: 'none',
     transition: 'border-color var(--t-fast), box-shadow var(--t-fast)',
-    boxShadow: focused ? '0 0 0 3px rgba(94,184,255,0.15)' : 'none',
+    boxShadow: focused ? '0 0 0 3px var(--accent-dim)' : 'none',
   })
 
   return (
@@ -279,30 +310,153 @@ export default function AnalysisPage() {
       {/* ── Page Header ─────────────────────────────────────────── */}
       <div className="page-header">
         <div>
-          <div className="page-title">舆情分析</div>
-          <div className="page-subtitle">多源舆情聚合 · 情感分析 · 实体抽取 · 综合报告生成</div>
+          <div className="page-title">议题研判</div>
+          <div className="page-subtitle">多源信息汇聚 · 正文抽取 · 情绪分析 · 综合研判报告</div>
         </div>
         <div className="flex gap-3">
           <span className="badge badge-normal">
-            <span className="badge-dot" />多智能体团队
+            <span className="badge-dot" />研判协同
           </span>
           <span className="badge badge-active">
-            <span className="badge-dot" />ModelScope Qwen3.5
+            <span className="badge-dot" />本地模型
           </span>
         </div>
       </div>
 
-      {/* ── Charts Row ─────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-4)' }}>
+      {/* ── Hero Input Area ─────────────────────────────────────── */}
+      <div style={{
+        background: 'linear-gradient(135deg, rgba(37,99,235,0.04) 0%, rgba(192,132,252,0.04) 50%, rgba(22,163,74,0.03) 100%)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-sm)',
+        padding: 'var(--sp-6)',
+        position: 'relative',
+        overflow: 'hidden',
+      }}>
+        {/* Subtle decorative accent line at top */}
+        <div style={{
+          position: 'absolute', top: 0, left: 0, right: 0, height: 3,
+          background: 'linear-gradient(90deg, #2563eb, #c084fc, #16a34a)',
+          opacity: 0.6,
+        }} />
+
+        <div style={{ marginBottom: 'var(--sp-4)' }}>
+          <div style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
+            发起议题研判
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            多路抓取并行 · 正文抽取与清洗 · 本地模型推理 · 最长等待 15 分钟
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
+          <textarea
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="输入分析主题，例如：台海局势 · 中美关系 · 南海争端 · 朝鲜半岛 · 俄乌冲突..."
+            rows={3}
+            style={inputStyle()}
+            onFocus={e => { (e.target as HTMLTextAreaElement).style.borderColor = 'var(--accent)'; (e.target as HTMLTextAreaElement).style.boxShadow = '0 0 0 3px var(--accent-dim)' }}
+            onBlur={e => { (e.target as HTMLTextAreaElement).style.borderColor = 'var(--border)'; (e.target as HTMLTextAreaElement).style.boxShadow = 'none' }}
+          />
+
+          {/* Quick topic chips */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginRight: 4 }}>快捷话题</span>
+            {['俄乌冲突', '中美关系', '台海局势', '南海争端', '朝鲜半岛'].map(t => (
+              <button key={t} type="button" onClick={() => setQuery(t)} style={{
+                padding: '4px 12px', fontSize: '0.75rem', fontWeight: 500,
+                background: 'var(--bg-surface)', border: '1px solid var(--border)',
+                borderRadius: 99, color: 'var(--text-secondary)', cursor: 'pointer',
+                transition: 'all var(--t-fast)',
+              }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.background = 'rgba(37,99,235,0.06)' }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-secondary)'; e.currentTarget.style.background = 'var(--bg-surface)' }}
+              >{t}</button>
+            ))}
+          </div>
+
+          <div>
+            <button type="submit" className="btn btn-primary" disabled={loading || !query.trim()} style={{ minWidth: 160, height: 40 }}>
+              {loading ? <><div className="spinner-sm" /> 研判中...</> : <><PlayIcon /> 启动议题研判</>}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      {/* ── Agent Cards (always visible) ────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--sp-4)' }}>
+        {AGENTS.map((agent, i) => {
+          const status = agentStatuses[i]
+          const isRunning = status === 'running'
+          return (
+            <div key={agent.name} style={{
+              padding: 'var(--sp-4)',
+              background: isRunning
+                ? `linear-gradient(135deg, ${agent.color}08, ${agent.color}04)`
+                : 'var(--bg-surface)',
+              borderRadius: 'var(--radius-sm)',
+              border: `1px solid ${isRunning ? agent.color + '44' : 'var(--border)'}`,
+              display: 'flex', alignItems: 'center', gap: 'var(--sp-3)',
+              transition: 'all 0.3s ease',
+            }}>
+              <div style={{
+                width: 40, height: 40, borderRadius: 10,
+                background: `${agent.color}15`,
+                border: `1px solid ${agent.color}33`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: agent.color, flexShrink: 0,
+              }}>
+                {agent.icon === 'query' && <QueryIcon />}
+                {agent.icon === 'media' && <MediaIcon />}
+                {agent.icon === 'insight' && <InsightIcon />}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: '0.8rem', color: 'var(--text-primary)' }}>{agent.name}</div>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 2 }}>{agent.desc}</div>
+              </div>
+              <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+                {isRunning ? (
+                  <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
+                ) : (
+                  <div style={{
+                    width: 8, height: 8, borderRadius: '50%',
+                    backgroundColor: agentStatusDotColor(status),
+                    boxShadow: status === 'done' ? `0 0 6px ${agentStatusDotColor(status)}66` : 'none',
+                  }} />
+                )}
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                  {agentStatusLabel(status)}
+                </span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* ── Data Dashboard ──────────────────────────────────────── */}
+      {/* Row 1: CII Trend (2fr) + Sentiment Pie (1fr) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 'var(--sp-4)' }}>
+        <div className="panel">
+          <div className="panel-header">
+            <span className="panel-title">CII 趋势</span>
+            <span className="badge badge-active"><span className="badge-dot" />实时</span>
+          </div>
+          <div className="panel-body">
+            <CIITrendChart />
+          </div>
+        </div>
         <div className="panel">
           <div className="panel-header">
             <span className="panel-title">舆情态势</span>
-            <span className="badge badge-active"><span className="badge-dot" />LIVE</span>
           </div>
           <div className="panel-body">
             <SentimentChart query={query} />
           </div>
         </div>
+      </div>
+
+      {/* Row 2: Keywords (1fr) + Sankey (1fr) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-4)' }}>
         <div className="panel">
           <div className="panel-header">
             <span className="panel-title">热词分析</span>
@@ -310,17 +464,6 @@ export default function AnalysisPage() {
           </div>
           <div className="panel-body">
             <KeywordChart />
-          </div>
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-4)' }}>
-        <div className="panel">
-          <div className="panel-header">
-            <span className="panel-title">CII 趋势</span>
-          </div>
-          <div className="panel-body">
-            <CIITrendChart />
           </div>
         </div>
         <div className="panel">
@@ -333,90 +476,11 @@ export default function AnalysisPage() {
         </div>
       </div>
 
-      {/* ── Query Form ──────────────────────────────────────────── */}
-      <div className="panel">
-        <div className="panel-header">
-          <span className="panel-title">发起多智能体分析</span>
-          <SearchIcon />
-        </div>
-        <div className="panel-body">
-          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
-            <textarea
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder="输入分析主题，例如：台海局势 · 中美关系 · 南海争端 · 朝鲜半岛 · 俄乌冲突..."
-              rows={4}
-              style={inputStyle()}
-              onFocus={e => { (e.target as HTMLTextAreaElement).style.borderColor = 'var(--accent)'; (e.target as HTMLTextAreaElement).style.boxShadow = '0 0 0 3px rgba(94,184,255,0.15)' }}
-              onBlur={e => { (e.target as HTMLTextAreaElement).style.borderColor = 'var(--border-bright)'; (e.target as HTMLTextAreaElement).style.boxShadow = 'none' }}
-            />
-            <div style={{ display: 'flex', gap: 'var(--sp-3)', alignItems: 'center', flexWrap: 'wrap' }}>
-              <button type="submit" className="btn btn-primary" disabled={loading || !query.trim()}>
-                {loading ? <><div className="spinner-sm" /> 分析中...</> : <><PlayIcon /> 启动多智能体分析</>}
-              </button>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                Query × Media × Insight 并行 · ModelScope Qwen3.5-35B · 最长等待 15 分钟
-              </span>
-            </div>
-          </form>
-
-          {/* Quick topic chips */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)', marginTop: 'var(--sp-3)' }}>
-            {['俄乌冲突', '中美关系', '台海局势', '南海争端', '朝鲜半岛'].map(t => (
-              <button key={t} onClick={() => setQuery(t)} style={{
-                padding: '4px 10px', fontSize: '0.75rem', fontWeight: 500,
-                background: 'var(--bg-overlay)', border: '1px solid var(--border-bright)',
-                borderRadius: 99, color: 'var(--text-secondary)', cursor: 'pointer',
-                transition: 'all var(--t-fast)',
-              }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)' }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-bright)'; e.currentTarget.style.color = 'var(--text-secondary)' }}
-              >{t}</button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* ── Agent Status Row ─────────────────────────────────── */}
-      {loading && (
-        <div className="panel">
-          <div className="panel-header">
-            <span className="panel-title">多智能体团队状态</span>
-            <span className="badge badge-active"><span className="badge-dot" />RUNNING</span>
-          </div>
-          <div className="panel-body">
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--sp-4)' }}>
-              {[
-                { name: 'Query Agent', desc: '深度网络舆情搜索', icon: <QueryIcon />, color: '#5eb8ff' },
-                { name: 'Media Agent', desc: '媒体报道与多媒体分析', icon: <MediaIcon />, color: '#44ff88' },
-                { name: 'Insight Agent', desc: '社交媒体情感分析', icon: <InsightIcon />, color: '#ffd166' },
-              ].map(agent => (
-                <div key={agent.name} style={{
-                  padding: 'var(--sp-4)', background: 'var(--bg-overlay)', borderRadius: 'var(--radius-sm)',
-                  border: `1px solid ${agent.color}33`, display: 'flex', alignItems: 'center', gap: 'var(--sp-3)',
-                }}>
-                  <div style={{ width: 36, height: 36, borderRadius: 10, background: `${agent.color}22`, border: `1px solid ${agent.color}44`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: agent.color, flexShrink: 0 }}>
-                    {agent.icon}
-                  </div>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: '0.8rem', color: agent.color }}>{agent.name}</div>
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 2 }}>{agent.desc}</div>
-                  </div>
-                  <div style={{ marginLeft: 'auto', flexShrink: 0 }}>
-                    <div className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ── Error ─────────────────────────────────────────────── */}
       {error && (
-        <div className="panel" style={{ borderColor: 'var(--critical)', borderWidth: 1 }}>
+        <div className="panel" style={{ borderColor: '#ff3b5c', borderWidth: 1 }}>
           <div className="panel-body">
-            <div style={{ display: 'flex', gap: 'var(--sp-3)', alignItems: 'center', color: 'var(--critical)' }}>
+            <div style={{ display: 'flex', gap: 'var(--sp-3)', alignItems: 'center', color: '#ff3b5c' }}>
               <ErrorIcon />
               <span style={{ fontSize: '0.875rem' }}>{error}</span>
             </div>
@@ -438,10 +502,10 @@ export default function AnalysisPage() {
             {result.status === 'running' || result.status === 'created' ? (
               <div className="empty-state">
                 <div className="spinner" style={{ width: 28, height: 28 }} />
-                <p>多智能体分析进行中，Query × Media × Insight 并行处理中...</p>
+                <p>议题研判进行中，多路抓取、正文抽取与洞察分析正在并行处理...</p>
               </div>
             ) : result.status === 'failed' ? (
-              <div style={{ color: 'var(--critical)', fontSize: '0.875rem' }}>{result.error ?? '分析失败，请重试'}</div>
+              <div style={{ color: '#ff3b5c', fontSize: '0.875rem' }}>{result.error ?? '分析失败，请重试'}</div>
             ) : result.html_report ? (
               <div
                 className="report-body"
@@ -459,11 +523,6 @@ export default function AnalysisPage() {
 }
 
 /* ── Agent Icons ─────────────────────────────────────────────────────────────── */
-function SearchIcon() {
-  return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" width="15" height="15" style={{ color: 'var(--text-muted)' }}>
-    <circle cx="7" cy="7" r="5" /><line x1="11" y1="11" x2="15" y2="15" />
-  </svg>
-}
 function PlayIcon() {
   return <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><polygon points="4,2 14,8 4,14" /></svg>
 }

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Simulation Manager - Core simulation lifecycle management"""
 import os
 import json

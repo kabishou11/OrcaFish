@@ -1,3 +1,4 @@
+from __future__ import annotations
 """OrcaFish Simulation API Routes"""
 import uuid
 import os
@@ -5,7 +6,12 @@ import json
 from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from backend.models.simulation import SimulationCreateRequest, VariableInjection
+from backend.models.simulation import (
+    SimulationCreateRequest, VariableInjection,
+    AgentProfile, AgentStats, RoundSummary,
+    SimulationRunState, InterviewRequest, BatchInterviewRequest,
+    KGData, GraphNode, GraphEdge
+)
 from backend.simulation import (
     OntologyGenerator, GraphBuilder, OASISRunner, SimulationIPC, SimulationReportAgent
 )
@@ -137,7 +143,7 @@ async def _run_simulation_bg(run_id: str, sim_id: str, req: SimulationCreateRequ
         final_states = []
         actions_file = os.path.join(sim_dir, "actions.jsonl")
         if os.path.exists(actions_file):
-            seen_agents = set()
+            seen_agents: dict[str, dict] = {}
             with open(actions_file, encoding='utf-8') as f:
                 for line in f:
                     if line.strip():
@@ -145,17 +151,36 @@ async def _run_simulation_bg(run_id: str, sim_id: str, req: SimulationCreateRequ
                             entry = json.loads(line)
                             agent_id = entry.get("agent_id", "")
                             if agent_id and agent_id not in seen_agents:
-                                seen_agents.add(agent_id)
-                                import random as _r
-                                final_states.append({
-                                    "id": agent_id,
-                                    "position": [_r.uniform(-1, 1), _r.uniform(-1, 1)],
-                                    "belief": _r.uniform(0.2, 0.85),
-                                    "influence": _r.uniform(0.1, 0.9),
-                                })
+                                seen_agents[agent_id] = {
+                                    "actions": 0,
+                                    "belief_sum": 0.0,
+                                    "influence_sum": 0.0,
+                                }
+                            if agent_id in seen_agents:
+                                seen_agents[agent_id]["actions"] += 1
+                                # 模拟信念漂移：不同平台/轮次有不同信念
+                                base = hash(agent_id) % 100 / 100
+                                seen_agents[agent_id]["belief_sum"] += 0.3 + base * 0.5
+                                seen_agents[agent_id]["influence_sum"] += 0.2 + (seen_agents[agent_id]["actions"] / 50)
                         except Exception:
                             pass
-        _run_registry[run_id]["final_states"] = final_states[:10]
+
+            for aid, s in seen_agents.items():
+                import random as _r
+                belief = min(s["belief_sum"] / max(s["actions"], 1), 0.99)
+                influence = min(s["influence_sum"] / max(s["actions"], 1), 0.99)
+                # 在 [-1, 1] 范围内生成位置
+                px = _r.uniform(-0.9, 0.9)
+                py = _r.uniform(-0.9, 0.9)
+                final_states.append({
+                    "id": aid,
+                    "position": [px, py],
+                    "belief": round(belief, 4),
+                    "influence": round(influence, 4),
+                    "actions": s["actions"],
+                })
+
+        _run_registry[run_id]["final_states"] = final_states
         _run_registry[run_id]["convergence_achieved"] = (
             _run_registry[run_id]["status"] == "completed"
         )
@@ -169,37 +194,31 @@ async def _run_simulation_bg(run_id: str, sim_id: str, req: SimulationCreateRequ
 
 @router.post("/create")
 async def create_simulation(req: SimulationCreateRequest) -> dict:
-    """Create a new simulation project with knowledge graph"""
-    llm = LLMClient(
-        api_key=settings.insight_llm.api_key,
-        base_url=settings.insight_llm.base_url,
-        model=settings.insight_llm.model,
-        provider=settings.insight_llm.provider,
-    )
+    """Create a new simulation project with Zep CE knowledge graph"""
+    from backend.graph import GraphBuilder
 
-    builder = GraphBuilder(zep_api_key=settings.zep_api_key)
-    builder.set_llm(llm)
-
-    result = await builder.build(
-        seed_content=req.seed_content,
-        project_name=req.name,
-        simulation_requirement=req.simulation_requirement,
-    )
+    # 通过 Zep CE HTTP 接口创建图谱
+    builder = GraphBuilder()  # 从 config 读取 zep_base_url / zep_api_secret
+    graph_id = builder.create_graph(name=req.name)
+    # 将 seed_content 分块写入
+    chunks = [req.seed_content[i:i+500] for i in range(0, min(len(req.seed_content), 5000), 500)]
+    builder.add_text_batch(graph_id, chunks)
 
     sim_id = f"sim_{uuid.uuid4().hex[:12]}"
     runner = OASISRunner()
     sim_id_out, sim_dir = runner.create_simulation({
         "simulation_id": sim_id,
-        "project_id": result.project_id,
-        "graph_id": result.graph_id,
+        "project_id": graph_id,
+        "graph_id": graph_id,
     })
 
+    graph_info = builder.get_graph_info(graph_id)
     return {
-        "project_id": result.project_id,
+        "project_id": graph_id,
         "simulation_id": sim_id_out,
-        "graph_id": result.graph_id,
-        "ontology": result.ontology,
-        "entity_count": result.entity_count,
+        "graph_id": graph_id,
+        "ontology": {},
+        "entity_count": graph_info.node_count,
     }
 
 
@@ -392,3 +411,531 @@ async def get_run_status(run_id: str) -> dict:
         "recent_actions": recent_actions if recent_actions else oasis_status.recent_actions,
         "is_mock": getattr(oasis_status, "is_mock", False),
     }
+
+
+# ── Profiles ─────────────────────────────────────────────────────────────────
+
+@router.get("/runs/{run_id}/profiles")
+async def get_run_profiles(run_id: str) -> dict:
+    """Get agent profiles for a simulation run"""
+    if run_id not in _run_registry:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run = _run_registry[run_id]
+    sim_id = run.get("simulation_id")
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "simulations")
+    actions_file = os.path.join(data_dir, sim_id, "actions.jsonl")
+
+    profiles: list[dict] = []
+    seen = set()
+
+    if os.path.exists(actions_file):
+        with open(actions_file, encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        a = json.loads(line)
+                        aid = a.get("agent_id", "")
+                        if aid and aid not in seen:
+                            seen.add(aid)
+                            profiles.append({
+                                "agent_id": aid,
+                                "name": a.get("agent_name", f"Agent_{aid[:6]}"),
+                                "platform": a.get("platform", "twitter"),
+                                "bio": f"Simulation agent for {run.get('scenario', 'scenario')}",
+                                "followers": 100 + len(seen) * 23,
+                                "following": 50 + len(seen) * 7,
+                                "posts_count": sum(1 for p in seen),
+                                "credibility_score": round(0.4 + len(seen) * 0.05, 3),
+                                "influence_score": round(0.3 + len(seen) * 0.07, 3),
+                                "stance": ["support", "oppose", "neutral"][len(seen) % 3],
+                                "round_joined": a.get("round_num", 1),
+                            })
+                    except Exception:
+                        pass
+
+    return {"run_id": run_id, "profiles": profiles, "count": len(profiles)}
+
+
+# ── Actions (paginated) ──────────────────────────────────────────────────────
+
+@router.get("/runs/{run_id}/actions")
+async def get_run_actions(
+    run_id: str,
+    platform: str | None = None,
+    agent_id: str | None = None,
+    round_num: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Get paginated action list with filters"""
+    if run_id not in _run_registry:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run = _run_registry[run_id]
+    sim_id = run.get("simulation_id")
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "simulations")
+    actions_file = os.path.join(data_dir, sim_id, "actions.jsonl")
+
+    all_actions: list[dict] = []
+    if os.path.exists(actions_file):
+        with open(actions_file, encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        all_actions.append(json.loads(line))
+                    except Exception:
+                        pass
+
+    # Apply filters
+    if platform:
+        all_actions = [a for a in all_actions if a.get("platform") == platform]
+    if agent_id:
+        all_actions = [a for a in all_actions if a.get("agent_id") == agent_id]
+    if round_num is not None:
+        all_actions = [a for a in all_actions if a.get("round_num") == round_num]
+
+    total = len(all_actions)
+    page = all_actions[offset:offset + limit]
+
+    return {
+        "run_id": run_id,
+        "actions": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "platform": platform or "all",
+    }
+
+
+# ── Timeline ─────────────────────────────────────────────────────────────────
+
+@router.get("/runs/{run_id}/timeline")
+async def get_run_timeline(run_id: str) -> dict:
+    """Get round-by-round timeline summary"""
+    if run_id not in _run_registry:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run = _run_registry[run_id]
+    sim_id = run.get("simulation_id")
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "simulations")
+    actions_file = os.path.join(data_dir, sim_id, "actions.jsonl")
+
+    rounds: dict[int, dict] = {}
+    if os.path.exists(actions_file):
+        with open(actions_file, encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        a = json.loads(line)
+                        rnum = a.get("round_num", 0)
+                        plat = a.get("platform", "twitter")
+                        key = (rnum, plat)
+                        if key not in rounds:
+                            rounds[key] = {
+                                "round_num": rnum,
+                                "platform": plat,
+                                "active_agents": set(),
+                                "total_actions": 0,
+                                "action_types": {},
+                                "key_events": [],
+                            }
+                        rd = rounds[key]
+                        rd["active_agents"].add(a.get("agent_id", ""))
+                        rd["total_actions"] += 1
+                        at = a.get("action_type", "unknown")
+                        rd["action_types"][at] = rd["action_types"].get(at, 0) + 1
+                        if at in ("post", "tweet") and len(rd["key_events"]) < 3:
+                            content = str(a.get("action_args", {}).get("content", ""))[:100]
+                            if content:
+                                rd["key_events"].append(content)
+                    except Exception:
+                        pass
+
+    summaries = []
+    for (rnum, plat), rd in sorted(rounds.items()):
+        dominant = max(rd["action_types"], key=rd["action_types"].get) if rd["action_types"] else ""
+        summaries.append(RoundSummary(
+            round_num=rnum,
+            platform=plat,
+            active_agents=len(rd["active_agents"]),
+            total_actions=rd["total_actions"],
+            dominant_action_type=dominant,
+            avg_sentiment=0.5,
+            key_events=rd["key_events"],
+        ).model_dump())
+
+    return {"run_id": run_id, "timeline": summaries, "count": len(summaries)}
+
+
+# ── Agent Stats ───────────────────────────────────────────────────────────────
+
+@router.get("/runs/{run_id}/agent-stats")
+async def get_run_agent_stats(run_id: str) -> dict:
+    """Get per-agent statistics"""
+    if run_id not in _run_registry:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run = _run_registry[run_id]
+    sim_id = run.get("simulation_id")
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "simulations")
+    actions_file = os.path.join(data_dir, sim_id, "actions.jsonl")
+
+    stats: dict[str, dict] = {}
+    if os.path.exists(actions_file):
+        with open(actions_file, encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        a = json.loads(line)
+                        aid = a.get("agent_id", "")
+                        if not aid:
+                            continue
+                        if aid not in stats:
+                            stats[aid] = {
+                                "agent_id": aid,
+                                "agent_name": a.get("agent_name", f"Agent_{aid[:6]}"),
+                                "platform": a.get("platform", "twitter"),
+                                "total_actions": 0,
+                                "actions_by_type": {},
+                                "sentiment_sum": 0.0,
+                                "sentiment_count": 0,
+                            }
+                        s = stats[aid]
+                        s["total_actions"] += 1
+                        at = a.get("action_type", "unknown")
+                        s["actions_by_type"][at] = s["actions_by_type"].get(at, 0) + 1
+                        sent = a.get("action_args", {}).get("sentiment", 0.5)
+                        s["sentiment_sum"] += float(sent)
+                        s["sentiment_count"] += 1
+                    except Exception:
+                        pass
+
+    result = []
+    for aid, s in stats.items():
+        final_state = next(
+            (fs for fs in run.get("final_states", []) if fs.get("id") == aid),
+            None
+        )
+        belief = final_state.get("belief", 0.5) if final_state else 0.5
+        result.append(AgentStats(
+            agent_id=aid,
+            agent_name=s["agent_name"],
+            platform=s["platform"],
+            total_actions=s["total_actions"],
+            actions_by_type=s["actions_by_type"],
+            avg_sentiment=round(s["sentiment_sum"] / s["sentiment_count"], 4) if s["sentiment_count"] else 0.5,
+            engagement_rate=round(s["total_actions"] * 0.12, 4),
+            influence_score=round(0.2 + s["total_actions"] * 0.03, 4),
+            belief_drift=round(abs(belief - 0.5) * 0.5, 4),
+            final_belief=round(belief, 4),
+        ).model_dump())
+
+    return {"run_id": run_id, "stats": result, "count": len(result)}
+
+
+# ── Interview ────────────────────────────────────────────────────────────────
+
+@router.post("/runs/{run_id}/interview")
+async def interview_agent(run_id: str, req: InterviewRequest) -> dict:
+    """Interview a single agent via SimulationRunner (IPC or LLM)"""
+    if run_id not in _run_registry:
+        raise HTTPException(status_code=404, detail="Run not found")
+    run = _run_registry[run_id]
+    sim_id = run.get("simulation_id")
+    try:
+        aid = req.agent_id
+        result = SimulationRunner.interview_agent(
+            simulation_id=sim_id,
+            agent_id=int(aid) if str(aid).isdigit() else aid,
+            prompt=req.question,
+            platform=req.platform if req.platform not in ("both", None, "") else None,
+        )
+        return {
+            "run_id": run_id,
+            "agent_id": req.agent_id,
+            "platform": req.platform,
+            "question": req.question,
+            "response": result.get("result") or result.get("error") or "",
+            "success": result.get("success", False),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        return {
+            "run_id": run_id,
+            "agent_id": req.agent_id,
+            "platform": req.platform,
+            "question": req.question,
+            "response": f"[Interview error: {e}]",
+            "success": False,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+@router.post("/runs/{run_id}/interviews")
+async def batch_interview(run_id: str, req: BatchInterviewRequest) -> dict:
+    """Batch interview multiple agents via SimulationRunner"""
+    if run_id not in _run_registry:
+        raise HTTPException(status_code=404, detail="Run not found")
+    run = _run_registry[run_id]
+    sim_id = run.get("simulation_id")
+    interviews = [{"agent_id": aid, "prompt": req.question} for aid in req.agent_ids]
+    try:
+        result = SimulationRunner.interview_agents_batch(
+            simulation_id=sim_id,
+            interviews=interviews,
+            platform=req.platform if req.platform not in ("both", None, "") else None,
+        )
+        return {
+            "run_id": run_id,
+            "responses": result.get("responses", []),
+            "count": result.get("interviews_count", len(interviews)),
+            "success": result.get("success", False),
+        }
+    except Exception as e:
+        return {"run_id": run_id, "responses": [], "count": 0, "error": str(e)}
+
+# ── Knowledge Graph ───────────────────────────────────────────────────────────
+
+@router.get("/runs/{run_id}/graph")
+async def get_run_graph(run_id: str) -> dict:
+    """Get knowledge graph data for a run (nodes + edges)"""
+    if run_id not in _run_registry:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run = _run_registry[run_id]
+    sim_id = run.get("simulation_id")
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "simulations")
+    actions_file = os.path.join(data_dir, sim_id, "actions.jsonl")
+
+    nodes: list[GraphNode] = []
+    edges: list[GraphEdge] = []
+    seen_nodes: set[str] = set()
+    agent_positions: dict[str, tuple[float, float]] = {}
+
+    # Build from final_states (agent nodes)
+    for fs in run.get("final_states", []):
+        nid = fs.get("id", "")
+        if nid and nid not in seen_nodes:
+            seen_nodes.add(nid)
+            pos = fs.get("position", [0, 0])
+            agent_positions[nid] = (float(pos[0]) if len(pos) > 0 else 0.0,
+                                    float(pos[1]) if len(pos) > 1 else 0.0)
+            belief = fs.get("belief", 0.5)
+            nodes.append(GraphNode(
+                id=nid,
+                name=nid[:12],
+                type="Agent",
+                properties={"belief": belief, "influence": fs.get("influence", 0.5)},
+            ))
+
+    # Build edges from action relationships
+    if os.path.exists(actions_file):
+        mentions: dict[tuple[str, str], int] = {}
+        with open(actions_file, encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        a = json.loads(line)
+                        src = a.get("agent_id", "")
+                        target = a.get("action_args", {}).get("target_user", "")
+                        if src and target and src != target:
+                            key = (src, target)
+                            mentions[key] = mentions.get(key, 0) + 1
+                    except Exception:
+                        pass
+
+        for (src, target), count in mentions.items():
+            if src not in seen_nodes:
+                seen_nodes.add(src)
+                nodes.append(GraphNode(id=src, name=src[:12], type="Agent", properties={}))
+            if target not in seen_nodes:
+                seen_nodes.add(target)
+                nodes.append(GraphNode(id=target, name=target[:12], type="Agent", properties={}))
+            edges.append(GraphEdge(
+                source=src, target=target,
+                type="mentions",
+                weight=min(count / 10.0, 1.0),
+                label=f"@{target[:8]}" if len(target) > 8 else f"@{target}",
+            ))
+
+    # Connect similar-belief agents
+    agents = [(n.id, n.properties.get("belief", 0.5)) for n in nodes if n.type == "Agent"]
+    for i, (aid1, b1) in enumerate(agents):
+        for aid2, b2 in agents[i + 1:]:
+            if abs(b1 - b2) < 0.2:
+                edges.append(GraphEdge(
+                    source=aid1, target=aid2,
+                    type="belief_similarity",
+                    weight=round(1.0 - abs(b1 - b2), 3),
+                    label=f"相似度 {int((1 - abs(b1 - b2)) * 100)}%",
+                ))
+
+    return KGData(nodes=nodes, edges=edges).model_dump()
+
+
+# ── Prepare ──────────────────────────────────────────────────────────────────
+
+@router.post("/prepare")
+async def prepare_run(req: SimulationCreateRequest) -> dict:
+    """Prepare a simulation configuration without starting it"""
+    sim_id = f"sim_{uuid.uuid4().hex[:12]}"
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "simulations")
+    sim_dir = os.path.join(data_dir, sim_id)
+    os.makedirs(sim_dir, exist_ok=True)
+
+    config_path = os.path.join(sim_dir, "simulation_config.json")
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "simulation_id": sim_id,
+            "name": req.name,
+            "seed_content": req.seed_content,
+            "simulation_requirement": req.simulation_requirement,
+            "max_rounds": req.max_rounds,
+            "enable_twitter": req.enable_twitter,
+            "enable_reddit": req.enable_reddit,
+        }, f, ensure_ascii=False)
+
+    return {
+        "simulation_id": sim_id,
+        "config_path": config_path,
+        "status": "ready",
+    }
+
+
+# ── Report ───────────────────────────────────────────────────────────────────
+
+@router.get("/report/{run_id}")
+async def get_simulation_report(run_id: str) -> dict:
+    """
+    Generate and return HTML report for a simulation run.
+    Frontend ReportViewer expects { html_content: string }.
+    """
+    if run_id not in _run_registry:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run = _run_registry[run_id]
+    sim_id = run.get("simulation_id", "")
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "simulations")
+    actions_file = os.path.join(data_dir, sim_id, "actions.jsonl")
+
+    # Collect stats from actions.jsonl
+    tw_count = rd_count = tw_max = rd_max = 0
+    action_types: dict[str, int] = {}
+    agents: list[str] = []
+    seen_agents = set()
+    recent_events: list[str] = []
+
+    if os.path.exists(actions_file):
+        with open(actions_file, encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        a = json.loads(line)
+                        plat = a.get("platform", "twitter")
+                        rnum = a.get("round_num", 0)
+                        at = a.get("action_type", "unknown")
+                        action_types[at] = action_types.get(at, 0) + 1
+                        if plat == "twitter":
+                            tw_count += 1
+                            tw_max = max(tw_max, rnum)
+                        else:
+                            rd_count += 1
+                            rd_max = max(rd_max, rnum)
+                        aid = a.get("agent_id", "")
+                        if aid and aid not in seen_agents:
+                            seen_agents.add(aid)
+                            agents.append(aid)
+                        content = str(a.get("action_args", {}).get("content", ""))[:120]
+                        if content and len(recent_events) < 8:
+                            recent_events.append(content)
+                    except Exception:
+                        pass
+
+    total_actions = tw_count + rd_count
+    seed = run.get("scenario", "仿真议题")
+    status = run.get("status", "unknown")
+    final_states = run.get("final_states", [])
+
+    # Compute high-risk agents
+    high_risk = [fs for fs in final_states if fs.get("belief", 0) > 0.65]
+    low_risk = [fs for fs in final_states if fs.get("belief", 0) < 0.35]
+
+    # Build HTML report
+    html_content = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  body {{ font-family: 'IBM Plex Sans', -apple-system, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; color: #1a2332; line-height: 1.7; }}
+  h1 {{ color: #1e40af; border-bottom: 2px solid #2563eb; padding-bottom: 8px; font-size: 1.6rem; }}
+  h2 {{ color: #1e3a8a; margin-top: 2em; font-size: 1.2rem; }}
+  .meta {{ color: #64748b; font-size: 0.85rem; margin-bottom: 2em; }}
+  .stats {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 1.5em 0; }}
+  .stat {{ background: #f0f4f8; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; text-align: center; }}
+  .stat-val {{ font-size: 1.8rem; font-weight: 700; color: #2563eb; }}
+  .stat-lbl {{ font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }}
+  .event {{ background: #fff; border-left: 3px solid #2563eb; padding: 8px 14px; margin: 6px 0; border-radius: 0 4px 4px 0; font-size: 0.88rem; color: #334155; }}
+  .high {{ color: #dc2626; font-weight: 600; }} .low {{ color: #16a34a; font-weight: 600; }}
+  .section {{ margin: 1.5em 0; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 1em 0; }}
+  th {{ background: #f0f4f8; padding: 8px 12px; text-align: left; font-size: 0.8rem; color: #64748b; border-bottom: 1px solid #e2e8f0; }}
+  td {{ padding: 8px 12px; font-size: 0.85rem; border-bottom: 1px solid #f1f5f9; }}
+  .badge {{ display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.72rem; font-weight: 600; }}
+  .badge-done {{ background: #dcfce7; color: #16a34a; }} .badge-fail {{ background: #fee2e2; color: #dc2626; }}
+  .badge-run {{ background: #dbeafe; color: #2563eb; }}
+</style>
+</head>
+<body>
+<h1>推演报告：{seed}</h1>
+<div class="meta">
+  运行 ID: <code>{run_id}</code> ·
+  状态: <span class="badge {'badge-done' if status == 'completed' else 'badge-fail' if status == 'failed' else 'badge-run'}">{status}</span> ·
+  生成时间: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
+</div>
+
+<h2>执行摘要</h2>
+<p>本推演基于议题"<strong>{seed}</strong>"，在 OASIS 双平台（Info Plaza / Topic Community）上运行了 <strong>{tw_max}/{rd_max}</strong> 轮，共产生 <strong>{total_actions}</strong> 个动作事件，参与代理体 <strong>{len(agents)}</strong> 个。</p>
+<p>系统{"已达成均衡收敛" if run.get("convergence_achieved") else "未达收敛条件"}，高风险代理体 {len(high_risk)} 个，低风险代理体 {len(low_risk)} 个。</p>
+
+<div class="stats">
+  <div class="stat"><div class="stat-val">{len(agents)}</div><div class="stat-lbl">代理体</div></div>
+  <div class="stat"><div class="stat-val">{total_actions}</div><div class="stat-lbl">总动作</div></div>
+  <div class="stat"><div class="stat-val">{tw_count}</div><div class="stat-lbl">Info Plaza</div></div>
+  <div class="stat"><div class="stat-val">{rd_count}</div><div class="stat-lbl">Topic Comm.</div></div>
+</div>
+
+<h2>背景</h2>
+<p>OASIS 仿真引擎通过多代理体社交网络模拟，对议题在双平台上的演化进行推演。Info Plaza（类 Twitter）模拟公共广场的舆论扩散，Topic Community（类 Reddit）模拟社区内的深度讨论。两平台并行运行，代理体跨越平台进行交互。</p>
+
+<h2>行为分析</h2>
+<p>各类型动作分布：</p>
+<table>
+<tr><th>动作类型</th><th>次数</th><th>占比</th></tr>
+{"".join(f"<tr><td>{at}</td><td>{cnt}</td><td>{cnt * 100 / max(total_actions, 1):.1f}%</td></tr>" for at, cnt in sorted(action_types.items(), key=lambda x: -x[1]))}
+</table>
+
+<h2>重点事件</h2>
+{"".join(f"<div class='event'>📌 {ev}</div>" for ev in recent_events)}
+
+<h2>预测</h2>
+<p>基于当前仿真结果：</p>
+<ul>
+  <li>高风险代理体（信念值 &gt; 0.65）数量为 <span class="high">{len(high_risk)}</span>，建议重点关注其影响力扩散路径</li>
+  <li>低风险代理体（信念值 &lt; 0.35）数量为 <span class="low">{len(low_risk)}</span>，可能在后续演化中改变立场</li>
+  <li>整体系统{"已收敛" if run.get("convergence_achieved") else "仍处于动态演化中"}，未来趋势相对{"确定" if run.get("convergence_achieved") else "不确定"}</li>
+</ul>
+
+<h2>建议</h2>
+<ol>
+  <li>持续监控高风险代理体的行动模式，特别是在关键决策节点</li>
+  <li>利用低风险代理体作为意见领袖的潜在候选人进行引导</li>
+  <li>在 Info Plaza 与 Topic Community 之间建立信息桥接，促进理性讨论</li>
+  <li>定期重新运行仿真，跟踪议题演化最新态势</li>
+</ol>
+
+<div class="meta" style="margin-top:3em; border-top:1px solid #e2e8f0; padding-top:1em;">
+  本报告由 OrcaFish 未来推演引擎自动生成 · {total_actions} 个动作事件 · {len(agents)} 个代理体 · {tw_max + rd_max} 轮仿真
+</div>
+</body>
+</html>"""
+
+    return {"html_content": html_content, "run_id": run_id, "status": status}

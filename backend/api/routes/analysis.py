@@ -1,3 +1,4 @@
+from __future__ import annotations
 """OrcaFish Analysis API Routes — Multi-Agent Team Orchestration"""
 import uuid
 import asyncio

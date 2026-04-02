@@ -1,3 +1,4 @@
+from __future__ import annotations
 """News Event Clustering — ported from worldmonitor clustering.ts"""
 from collections import defaultdict
 from typing import Optional

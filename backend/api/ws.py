@@ -1,3 +1,4 @@
+from __future__ import annotations
 """OrcaFish WebSocket Broadcaster — real-time event push to connected clients."""
 import asyncio
 import json

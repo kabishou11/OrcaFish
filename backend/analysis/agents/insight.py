@@ -1,3 +1,4 @@
+from __future__ import annotations
 """OrcaFish InsightAgent — social media analysis via MindSpider database."""
 import os
 from typing import Optional

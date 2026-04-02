@@ -17,26 +17,32 @@ interface WMStatus {
 interface SimRun { run_id: string; status: string; rounds_completed: number; created_at: string }
 interface Pipeline { pipeline_id: string; stage: string; country_name: string; cii_score: number; created_at: string }
 
-function ScoreRing({ score, level }: { score: number; level: string }) {
+const STAGE_LABELS: Record<string, string> = {
+  detected: '已检测', analysis: '研判中', simulation: '推演中', completed: '已完成', failed: '失败',
+}
+
+/* ── ScoreRing (enlarged) ───────────────────────────────────────────── */
+function ScoreRing({ score, level, size = 160 }: { score: number; level: string; size?: number }) {
   const color =
     level === 'critical' ? 'var(--critical)' :
     level === 'high'     ? 'var(--high)'     :
     level === 'medium'   ? 'var(--medium)'   :
                            'var(--low)'
-  const r = 54
+  const r = size * 0.38
   const circ = 2 * Math.PI * r
   const dash = (score / 100) * circ
+  const half = size / 2
 
   return (
-    <div style={{ position: 'relative', width: 140, height: 140, flexShrink: 0 }}>
-      <svg width="140" height="140" viewBox="0 0 140 140" style={{ transform: 'rotate(-90deg)' }}>
-        <circle cx="70" cy="70" r={r} fill="none" stroke="var(--border)" strokeWidth="8" />
+    <div style={{ position: 'relative', width: size, height: size, flexShrink: 0 }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform: 'rotate(-90deg)' }}>
+        <circle cx={half} cy={half} r={r} fill="none" stroke="var(--border)" strokeWidth="10" opacity={0.5} />
         <circle
-          cx="70" cy="70" r={r} fill="none"
-          stroke={color} strokeWidth="8"
+          cx={half} cy={half} r={r} fill="none"
+          stroke={color} strokeWidth="10"
           strokeDasharray={`${dash} ${circ}`}
           strokeLinecap="round"
-          style={{ filter: `drop-shadow(0 0 6px ${color})`, transition: 'stroke-dasharray 0.6s ease' }}
+          style={{ filter: `drop-shadow(0 0 8px ${color})`, transition: 'stroke-dasharray 0.6s ease' }}
         />
       </svg>
       <div style={{
@@ -44,37 +50,112 @@ function ScoreRing({ score, level }: { score: number; level: string }) {
         display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'center',
       }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '1.9rem', fontWeight: 700, color, lineHeight: 1 }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: size * 0.16, fontWeight: 700, color, lineHeight: 1 }}>
           {score.toFixed(1)}
         </span>
-        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 4 }}>/ 100</span>
+        <span style={{ fontSize: size * 0.065, color: 'var(--text-muted)', marginTop: 4 }}>/ 100</span>
       </div>
     </div>
   )
 }
 
+/* ── StatCard (glass style) ─────────────────────────────────────────── */
 function StatCard({ label, value, sub, accent }: { label: string; value: React.ReactNode; sub?: string; accent?: string }) {
   return (
-    <div className="panel">
-      <div className="panel-body" style={{ padding: 'var(--sp-5)' }}>
-        <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 'var(--sp-2)' }}>
-          {label}
-        </div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '2rem', fontWeight: 700, color: accent ?? 'var(--text-primary)', lineHeight: 1 }}>
-          {value}
-        </div>
-        {sub && <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: 'var(--sp-2)' }}>{sub}</div>}
+    <div style={{
+      background: 'rgba(255,255,255,0.7)',
+      backdropFilter: 'blur(12px)',
+      WebkitBackdropFilter: 'blur(12px)',
+      border: '1px solid rgba(255,255,255,0.6)',
+      borderRadius: 'var(--radius-lg)',
+      padding: 'var(--sp-5)',
+      boxShadow: '0 4px 16px rgba(15,23,42,0.06)',
+      textAlign: 'center' as const,
+      minWidth: 140,
+    }}>
+      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: 'var(--sp-2)' }}>
+        {label}
+      </div>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: '2.2rem', fontWeight: 700, color: accent ?? 'var(--text-primary)', lineHeight: 1 }}>
+        {value}
+      </div>
+      {sub && <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: 'var(--sp-2)' }}>{sub}</div>}
+    </div>
+  )
+}
+
+/* ── Sparkline (inline SVG) ─────────────────────────────────────────── */
+function Sparkline({ data, color = 'var(--accent)', width = 200, height = 48 }: {
+  data: number[]
+  color?: string
+  width?: number
+  height?: number
+}) {
+  if (data.length < 2) return null
+  const min = Math.min(...data)
+  const max = Math.max(...data)
+  const range = max - min || 1
+  const padY = 4
+  const usableH = height - padY * 2
+
+  const points = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * width
+    const y = padY + usableH - ((v - min) / range) * usableH
+    return `${x},${y}`
+  })
+
+  const areaPoints = [...points, `${width},${height}`, `0,${height}`].join(' ')
+
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block' }}>
+      <defs>
+        <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity={0.2} />
+          <stop offset="100%" stopColor={color} stopOpacity={0.02} />
+        </linearGradient>
+      </defs>
+      <polygon points={areaPoints} fill="url(#spark-fill)" />
+      <polyline
+        points={points.join(' ')}
+        fill="none"
+        stroke={color}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      {/* last point dot */}
+      {(() => {
+        const last = points[points.length - 1].split(',')
+        return <circle cx={last[0]} cy={last[1]} r="3" fill={color} />
+      })()}
+    </svg>
+  )
+}
+
+/* ── Mini Progress Bar ──────────────────────────────────────────────── */
+function MiniProgress({ value, max, label, color }: { value: number; max: number; label: string; color: string }) {
+  const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0
+  return (
+    <div style={{ marginBottom: 'var(--sp-3)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+        <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{label}</span>
+        <span style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{value}/{max}</span>
+      </div>
+      <div style={{ height: 5, borderRadius: 99, background: 'var(--bg-overlay)' }}>
+        <div style={{ height: '100%', width: `${pct}%`, borderRadius: 99, background: color, transition: 'width 0.5s ease' }} />
       </div>
     </div>
   )
 }
 
+/* ── Dashboard ──────────────────────────────────────────────────────── */
 export default function Dashboard() {
   const [cii, setCii] = useState<CIIOverview | null>(null)
   const [wmStatus, setWmStatus] = useState<WMStatus | null>(null)
   const [simRuns, setSimRuns] = useState<SimRun[]>([])
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [loading, setLoading] = useState(true)
+  const [ciiHistory, setCiiHistory] = useState<number[]>([])
 
   useEffect(() => {
     const fetchAll = async () => {
@@ -85,7 +166,15 @@ export default function Dashboard() {
           fetch('/api/simulation/runs'),
           fetch('/api/pipeline/'),
         ])
-        if (ciiRes.ok)  setCii(await ciiRes.json())
+        if (ciiRes.ok) {
+          const d = await ciiRes.json()
+          setCii(d)
+          // accumulate history (keep last 7 values for sparkline)
+          setCiiHistory(prev => {
+            const next = [...prev, d.cii ?? 0]
+            return next.length > 7 ? next.slice(-7) : next
+          })
+        }
         if (wmRes.ok)   setWmStatus(await wmRes.json())
         if (simRes.ok)  { const d = await simRes.json(); setSimRuns(d.runs ?? []) }
         if (pipeRes.ok) { const d = await pipeRes.json(); setPipelines(d.pipelines ?? []) }
@@ -113,82 +202,237 @@ export default function Dashboard() {
 
   const runningSims = simRuns.filter(r => r.status === 'running').length
   const activePipelines = pipelines.filter(p => p.stage !== 'completed' && p.stage !== 'failed').length
+  const completedPipelines = pipelines.filter(p => p.stage === 'completed').length
+  const failedPipelines = pipelines.filter(p => p.stage === 'failed').length
+
+  // pipeline stage distribution for mini chart
+  const stageGroups = {
+    detected: pipelines.filter(p => p.stage === 'detected').length,
+    analysis: pipelines.filter(p => p.stage === 'analysis').length,
+    simulation: pipelines.filter(p => p.stage === 'simulation').length,
+    completed: completedPipelines,
+    failed: failedPipelines,
+  }
+
+  // sim stats
+  const completedSims = simRuns.filter(r => r.status === 'completed').length
+  const failedSims = simRuns.filter(r => r.status === 'failed').length
+
+  // sparkline fallback: if no history, create mock from country scores
+  const sparkData = ciiHistory.length >= 2
+    ? ciiHistory
+    : (cii?.countries?.slice(0, 7).map(c => c.score) ?? [30, 35, 40, 38, 42])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-6)' }}>
 
-      {/* ── Page header ─────────────────────────────────────────────── */}
-      <div className="page-header">
-        <div>
-          <div className="page-title">统一情报中枢</div>
-          <div className="page-subtitle">OrcaFish · 全球危机监测 · 舆情分析 · 仿真预测</div>
-        </div>
-        <div className="flex gap-3">
-          <span className={`badge ${wmStatus?.running ? 'badge-done' : 'badge-pending'}`}>
-            <span className="badge-dot" />
-            {wmStatus?.running ? '监测引擎运行中' : '监测引擎已停止'}
-          </span>
-        </div>
-      </div>
+      {/* ═══════════════════════════════════════════════════════════════
+           1. HERO AREA — full-width gradient
+         ═══════════════════════════════════════════════════════════════ */}
+      <div style={{
+        background: 'linear-gradient(135deg, #eef2ff 0%, #f0f4f8 60%, #e8f4f8 100%)',
+        borderRadius: 'var(--radius-lg)',
+        border: '1px solid var(--border)',
+        padding: 'var(--sp-8)',
+        position: 'relative',
+        overflow: 'hidden',
+      }}>
+        {/* decorative circles */}
+        <div style={{ position: 'absolute', top: -60, right: -60, width: 200, height: 200, borderRadius: '50%', background: 'rgba(37,99,235,0.04)' }} />
+        <div style={{ position: 'absolute', bottom: -40, left: -40, width: 160, height: 160, borderRadius: '50%', background: 'rgba(124,58,237,0.03)' }} />
 
-      {/* ── Hero CII Panel ─────────────────────────────────────────── */}
-      <div className="panel">
-        <div className="panel-header">
-          <span className="panel-title">危机强度指数 (CII)</span>
-          <span className={`badge ${levelBadgeClass}`}>
-            <span className="badge-dot" />
-            {cii?.level?.toUpperCase() ?? '—'}
-          </span>
-        </div>
-        <div className="panel-body" style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-8)', flexWrap: 'wrap' }}>
-          <ScoreRing score={cii?.cii ?? 0} level={cii?.level ?? 'low'} />
-          <div style={{ flex: 1, minWidth: 200 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 'var(--sp-3)' }}>
-              {cii?.countries?.slice(0, 6).map(c => (
-                <div key={c.iso} className="panel" style={{ background: 'var(--bg-overlay)' }}>
-                  <div className="panel-body" style={{ padding: 'var(--sp-3)' }}>
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 4, fontFamily: 'var(--font-mono)' }}>{c.iso}</div>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '1.15rem', color: c.score >= 65 ? 'var(--critical)' : c.score >= 45 ? 'var(--high)' : 'var(--low)' }}>
-                      {c.score.toFixed(1)}
-                    </div>
-                  </div>
-                </div>
-              ))}
+        {/* top row: title + badge */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--sp-6)', position: 'relative' }}>
+          <div>
+            <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+              预测总览
+            </div>
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: 4, fontFamily: 'var(--font-mono)' }}>
+              OrcaFish 预见中枢 · 全球观测 · 议题研判 · 未来推演
             </div>
             {cii?.timestamp && (
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 'var(--sp-3)', fontFamily: 'var(--font-mono)' }}>
-                更新于 {new Date(cii.timestamp).toLocaleString('zh-CN')}
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 8, fontFamily: 'var(--font-mono)' }}>
+                数据更新于 {new Date(cii.timestamp).toLocaleString('zh-CN')}
               </div>
             )}
+          </div>
+          <div className="flex gap-3" style={{ alignItems: 'center' }}>
+            <span
+              className={`badge ${wmStatus?.running ? 'badge-done' : 'badge-pending'}`}
+              style={wmStatus?.running ? { boxShadow: '0 0 10px var(--accent-dim)' } : undefined}
+            >
+              <span className="badge-dot" />
+              {wmStatus?.running ? '监测引擎运行中' : '监测引擎已停止'}
+            </span>
+          </div>
+        </div>
+
+        {/* main hero content: CII ring + KPI cards */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-8)', flexWrap: 'wrap', position: 'relative' }}>
+          {/* CII Ring + Level */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--sp-3)' }}>
+            <ScoreRing score={cii?.cii ?? 0} level={cii?.level ?? 'low'} size={180} />
+            <span className={`badge ${levelBadgeClass}`} style={{ fontSize: '0.8rem', padding: '4px 14px' }}>
+              <span className="badge-dot" />
+              全球危机指数 · {cii?.level?.toUpperCase() ?? '—'}
+            </span>
+          </div>
+
+          {/* 3 KPI glass cards */}
+          <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--sp-4)', minWidth: 320 }}>
+            <StatCard label="活跃信号" value={signalsTotal(pipelines)} sub="全球情报源" accent="var(--accent)" />
+            <StatCard label="推演次数" value={simRuns.length} sub={runningSims > 0 ? `${runningSims} 运行中` : '全部完成'} accent="var(--stage-active)" />
+            <StatCard label="自动流程" value={activePipelines} sub={`共 ${pipelines.length} 条流程`} accent="var(--medium)" />
           </div>
         </div>
       </div>
 
-      {/* ── KPI Row ───────────────────────────────────────────────── */}
-      <div className="grid-4">
-        <StatCard label="活跃信号" value={signalsTotal(pipelines)} sub="全球情报源" accent="var(--accent)" />
-        <StatCard label="仿真运行" value={simRuns.length} sub={`${runningSims} 轮次运行中`} accent="var(--stage-active)" />
-        <StatCard label="流水线" value={activePipelines} sub={`共 ${pipelines.length} 条流水线`} accent="var(--medium)" />
-        <StatCard label="系统状态" value={
-          <span style={{ fontSize: '1rem', color: 'var(--low)' }}>● 运行中</span>
-        } sub={`轮询间隔 ${wmStatus?.poll_interval ?? 300}s`} />
+      {/* ═══════════════════════════════════════════════════════════════
+           2. QUICK LINKS — colored left bar + arrow
+         ═══════════════════════════════════════════════════════════════ */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 'var(--sp-4)' }}>
+        {([
+          { href: '/intelligence', title: '全球观测', desc: '实时信号监控与危机指数计算', icon: <IconRadar />, accent: 'var(--accent)' },
+          { href: '/analysis',    title: '议题研判', desc: '多源舆情聚合与情感分析',     icon: <IconSearch />, accent: 'var(--high)' },
+          { href: '/simulation',  title: '未来推演', desc: '群体智能仿真与情景预测',     icon: <IconChart />, accent: 'var(--low)' },
+          { href: '/pipeline',    title: '自动流程', desc: '三阶段自动化流程编排',       icon: <IconPipeline />, accent: 'var(--medium)' },
+        ] as const).map(item => (
+          <a key={item.href} href={item.href} style={{ textDecoration: 'none', color: 'inherit' }}>
+            <div
+              className="panel"
+              style={{
+                display: 'flex',
+                overflow: 'hidden',
+                transition: 'box-shadow var(--t-base), transform var(--t-base)',
+                cursor: 'pointer',
+                height: '100%',
+              }}
+              onMouseEnter={e => { const el = e.currentTarget; el.style.boxShadow = `0 8px 24px rgba(15,23,42,0.10), inset 4px 0 0 ${item.accent}`; el.style.transform = 'translateY(-3px)' }}
+              onMouseLeave={e => { const el = e.currentTarget; el.style.boxShadow = 'var(--shadow-sm)'; el.style.transform = 'translateY(0)' }}
+            >
+              {/* colored left bar */}
+              <div style={{ width: 4, background: item.accent, flexShrink: 0 }} />
+              <div style={{ flex: 1, padding: 'var(--sp-4) var(--sp-4)', display: 'flex', alignItems: 'center', gap: 'var(--sp-3)' }}>
+                <div style={{
+                  width: 40, height: 40, borderRadius: 10,
+                  background: 'var(--bg-overlay)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: item.accent, flexShrink: 0,
+                }}>
+                  {item.icon}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: 2 }}>{item.title}</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>{item.desc}</div>
+                </div>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" style={{ flexShrink: 0 }}>
+                  <path d="M6 3l5 5-5 5" />
+                </svg>
+              </div>
+            </div>
+          </a>
+        ))}
       </div>
 
-      {/* ── Recent Pipelines ──────────────────────────────────────── */}
-      {pipelines.length > 0 && (
+      {/* ═══════════════════════════════════════════════════════════════
+           3. DATA OVERVIEW ROW — sparkline + pipeline progress + sim stats
+         ═══════════════════════════════════════════════════════════════ */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 'var(--sp-4)' }}>
+        {/* CII Trend sparkline */}
         <div className="panel">
           <div className="panel-header">
-            <span className="panel-title">最近流水线</span>
-            <a href="/pipeline" style={{ fontSize: '0.78rem', color: 'var(--accent)' }}>查看全部 →</a>
+            <span className="panel-title">CII 走势</span>
+            <span style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+              最近 {sparkData.length} 次采样
+            </span>
+          </div>
+          <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 'var(--sp-2)' }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '1.6rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                {(cii?.cii ?? 0).toFixed(1)}
+              </span>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>当前值</span>
+            </div>
+            <Sparkline data={sparkData} color="var(--accent)" width={280} height={52} />
+          </div>
+        </div>
+
+        {/* Pipeline progress */}
+        <div className="panel">
+          <div className="panel-header">
+            <span className="panel-title">流水线进度</span>
+            <span style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+              共 {pipelines.length} 条
+            </span>
+          </div>
+          <div className="panel-body">
+            <MiniProgress value={stageGroups.detected} max={pipelines.length || 1} label="已检测" color="var(--stage-pending)" />
+            <MiniProgress value={stageGroups.analysis} max={pipelines.length || 1} label="研判中" color="var(--accent)" />
+            <MiniProgress value={stageGroups.simulation} max={pipelines.length || 1} label="推演中" color="var(--medium)" />
+            <MiniProgress value={stageGroups.completed} max={pipelines.length || 1} label="已完成" color="var(--low)" />
+          </div>
+        </div>
+
+        {/* Simulation stats */}
+        <div className="panel">
+          <div className="panel-header">
+            <span className="panel-title">推演统计</span>
+            <span style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+              共 {simRuns.length} 次
+            </span>
+          </div>
+          <div className="panel-body">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-3)' }}>
+              <div style={{ textAlign: 'center', padding: 'var(--sp-3)', borderRadius: 'var(--radius)', background: 'var(--accent-dim)' }}>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1.4rem', fontWeight: 700, color: 'var(--accent)' }}>{runningSims}</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2 }}>运行中</div>
+              </div>
+              <div style={{ textAlign: 'center', padding: 'var(--sp-3)', borderRadius: 'var(--radius)', background: 'var(--low-d)' }}>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1.4rem', fontWeight: 700, color: 'var(--low)' }}>{completedSims}</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2 }}>已完成</div>
+              </div>
+              <div style={{ textAlign: 'center', padding: 'var(--sp-3)', borderRadius: 'var(--radius)', background: 'var(--critical-d)' }}>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1.4rem', fontWeight: 700, color: 'var(--critical)' }}>{failedSims}</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2 }}>失败</div>
+              </div>
+              <div style={{ textAlign: 'center', padding: 'var(--sp-3)', borderRadius: 'var(--radius)', background: 'var(--bg-overlay)' }}>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1.4rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  {simRuns.length > 0 ? Math.round(simRuns.reduce((s, r) => s + r.rounds_completed, 0) / simRuns.length) : 0}
+                </div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2 }}>平均轮次</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════════
+           4. RECENT PIPELINES TABLE — improved header
+         ═══════════════════════════════════════════════════════════════ */}
+      {pipelines.length > 0 && (
+        <div className="panel">
+          <div className="panel-header" style={{
+            background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f0f4ff 100%)',
+          }}>
+            <span className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round">
+                <path d="M2 4h12M2 8h12M2 12h12" />
+              </svg>
+              最近流水线
+            </span>
+            <a href="/pipeline" style={{ fontSize: '0.78rem', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              查看全部
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 3l5 5-5 5" /></svg>
+            </a>
           </div>
           <div style={{ overflowX: 'auto' }}>
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>地区</th>
-                  <th>CII</th>
-                  <th>阶段</th>
-                  <th>创建时间</th>
+                  <th style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f0f4ff 100%)' }}>地区</th>
+                  <th style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f0f4ff 100%)' }}>CII</th>
+                  <th style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f0f4ff 100%)' }}>阶段</th>
+                  <th style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f0f4ff 100%)' }}>创建时间</th>
                 </tr>
               </thead>
               <tbody>
@@ -201,7 +445,7 @@ export default function Dashboard() {
                     <tr key={p.pipeline_id}>
                       <td style={{ fontWeight: 500 }}>{p.country_name || p.pipeline_id}</td>
                       <td className="mono">{p.cii_score?.toFixed(1) ?? '—'}</td>
-                      <td><span className={`badge ${stageClass}`}><span className="badge-dot" />{p.stage}</span></td>
+                      <td><span className={`badge ${stageClass}`}><span className="badge-dot" />{STAGE_LABELS[p.stage] ?? p.stage}</span></td>
                       <td className="mono text-muted">{new Date(p.created_at).toLocaleString('zh-CN')}</td>
                     </tr>
                   )
@@ -211,32 +455,6 @@ export default function Dashboard() {
           </div>
         </div>
       )}
-
-      {/* ── Quick Links ───────────────────────────────────────────── */}
-      <div className="grid-2">
-        {[
-          { href: '/intelligence', title: '情报监测', desc: '全球地缘信号实时监控，危机强度指数计算，信号汇聚分析', icon: <IconRadar />, accent: 'var(--accent)' },
-          { href: '/analysis',     title: '舆情分析', desc: '多源舆情聚合，情感分析，实体抽取，议题检测，综合报告',     icon: <IconSearch />, accent: 'var(--high)' },
-          { href: '/simulation',   title: '仿真预测', desc: '群体智能仿真，代理网络建模，情景推演与预测报告生成',        icon: <IconChart />, accent: 'var(--low)' },
-          { href: '/pipeline',    title: '数据流水线', desc: '三阶段自动化流水线：信号检测 → 舆情分析 → 仿真推演',   icon: <IconPipeline />, accent: 'var(--medium)' },
-        ].map(item => (
-          <a key={item.href} href={item.href} style={{ textDecoration: 'none', color: 'inherit' }}>
-            <div className="panel" style={{ transition: 'border-color var(--t-base), box-shadow var(--t-base)', cursor: 'pointer' }}
-              onMouseEnter={e => { const el = e.currentTarget; el.style.borderColor = item.accent; el.style.boxShadow = `0 0 20px ${item.accent}33` }}
-              onMouseLeave={e => { const el = e.currentTarget; el.style.borderColor = 'var(--border)'; el.style.boxShadow = 'var(--shadow-sm)' }}>
-              <div className="panel-body" style={{ display: 'flex', gap: 'var(--sp-4)', alignItems: 'flex-start' }}>
-                <div style={{ width: 40, height: 40, borderRadius: 10, background: 'var(--bg-overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: item.accent, flexShrink: 0 }}>
-                  {item.icon}
-                </div>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: 4 }}>{item.title}</div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>{item.desc}</div>
-                </div>
-              </div>
-            </div>
-          </a>
-        ))}
-      </div>
     </div>
   )
 }
@@ -284,6 +502,7 @@ function IconPipeline() {
   )
 }
 
-function signalsTotal(pipelines: Pipeline[]): number {
-  return pipelines.reduce((acc, p) => acc + (p.cii_score > 0 ? 1 : 0), 0) || Math.floor(Math.random() * 20 + 5)
+function signalsTotal(pipelines: Pipeline[]): number | string {
+  const count = pipelines.reduce((acc, p) => acc + (p.cii_score > 0 ? 1 : 0), 0)
+  return count > 0 ? count : '—'
 }

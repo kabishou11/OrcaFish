@@ -1,3 +1,4 @@
+from __future__ import annotations
 """OrcaFish DeepSearchAgent Base — ported from BettaFish QueryEngine/agent.py"""
 import asyncio
 from abc import ABC, abstractmethod
@@ -211,6 +212,8 @@ class DeepSearchAgent(ABC):
         """
         # (a) Initial search
         search_results = await self.execute_search(para.content or para.title)
+        # 尝试通过 Crawl4AI 抓取正文，补充 SearchResult 的 content
+        search_results = await self._enrich_with_crawl4ai(search_results)
         for r in search_results:
             para.add_result(r)
 
@@ -254,6 +257,28 @@ class DeepSearchAgent(ABC):
         para.latest_summary = content
         para.is_completed = True
         return content
+
+    async def _enrich_with_crawl4ai(self, results: list[SearchResult]) -> list[SearchResult]:
+        """用 Crawl4AI 补充搜索结果的正文内容（只对有 URL 且正文短的结果操作）。
+        Crawl4AI 服务不可用时静默降级，不影响主流程。"""
+        try:
+            from backend.crawl4ai_client import crawl_url
+            urls_to_fetch = [r.url for r in results if r.url and len(r.content) < 200]
+            if not urls_to_fetch:
+                return results
+            import asyncio
+            crawl_tasks = [crawl_url(url, timeout=20) for url in urls_to_fetch]
+            crawl_results = await asyncio.gather(*crawl_tasks, return_exceptions=True)
+            url_to_md: dict = {}
+            for url, cr in zip(urls_to_fetch, crawl_results):
+                if isinstance(cr, dict) and cr.get("success") and cr.get("markdown"):
+                    url_to_md[url] = cr["markdown"][:1500]  # 截断，避免过长
+            for r in results:
+                if r.url in url_to_md:
+                    r.content = url_to_md[r.url]
+        except Exception:
+            pass
+        return results
 
     async def _summarize(
         self,

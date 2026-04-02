@@ -5,7 +5,7 @@ import AnalysisPage from './components/Analysis/AnalysisPage'
 import SimulationPage from './components/Simulation/SimulationPage'
 import PipelinePage from './components/Pipeline/PipelinePage'
 
-/* ── Inline SVG icons (no icon library dependency) ───────────────────── */
+/* ── Inline SVG icons ────────────────────────────────────────────────── */
 const IconRadar = () => (
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
     <circle cx="8" cy="8" r="6" />
@@ -62,37 +62,40 @@ export default function App() {
                 <path d="M10.5 4.5 L13 7 L10.5 9.5" />
               </svg>
             </div>
-            <span className="header-logo-name">Orca<span>Fish</span></span>
+            <div>
+              <span className="header-logo-name">Orca<span>Fish</span></span>
+              <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', fontFamily: 'var(--font-sans)', fontWeight: 400, marginTop: 1, letterSpacing: '0.04em' }}>预见中枢</div>
+            </div>
           </div>
 
           {/* Nav */}
           <nav className="app-nav">
             <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
               <IconDashboard />
-              仪表板
+              预测总览
             </NavLink>
             <NavLink to="/intelligence" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
               <IconRadar />
-              情报监测
+              全球观测
             </NavLink>
             <NavLink to="/analysis" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
               <IconSearch />
-              舆情分析
+              议题研判
             </NavLink>
             <NavLink to="/simulation" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
               <IconChart />
-              群体仿真
+              未来推演
             </NavLink>
             <NavLink to="/pipeline" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
               <IconPipeline />
-              数据流水线
+              自动流程
             </NavLink>
           </nav>
 
-          {/* Live status */}
+          {/* 实时状态 */}
           <div className="header-status">
             <span className="live-dot" />
-            <span>LIVE</span>
+            <span>实时</span>
           </div>
         </header>
 

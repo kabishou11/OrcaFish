@@ -1,3 +1,4 @@
+from __future__ import annotations
 """OrcaFish Signal Aggregator — ported from WorldMonitor signal-aggregator.ts"""
 from datetime import datetime, timedelta
 from typing import Optional

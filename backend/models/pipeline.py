@@ -1,5 +1,5 @@
 """OrcaFish Pipeline Models"""
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
 
@@ -19,9 +19,9 @@ class TriggerEvent(BaseModel):
     lat: float = 0.0
     lon: float = 0.0
     cii_score: float = 0.0
-    triggered_by: list[str] = []
-    signal_types: list[str] = []
-    signal_details: dict = {}
+    triggered_by: list[str] = Field(default_factory=list)
+    signal_types: list[str] = Field(default_factory=list)
+    signal_details: dict = Field(default_factory=dict)
 
 
 class PipelineState(BaseModel):
@@ -31,8 +31,8 @@ class PipelineState(BaseModel):
     lat: float = 0.0
     lon: float = 0.0
     cii_score: float = 0.0
-    triggered_by: list[str] = []
-    signal_types: list[str] = []
+    triggered_by: list[str] = Field(default_factory=list)
+    signal_types: list[str] = Field(default_factory=list)
     stage: str = PipelineStage.DETECTED
     stage_progress: int = 0
     analysis_task_id: Optional[str] = None
@@ -48,7 +48,7 @@ class PipelineState(BaseModel):
 
 
 class PipelineEvent(BaseModel):
-    event_type: str  # pipeline.started/stage.progress/stage.completed/completed/failed
+    event_type: str
     pipeline_id: str
-    data: dict = {}
+    data: dict = Field(default_factory=dict)
     timestamp: datetime = datetime.utcnow()

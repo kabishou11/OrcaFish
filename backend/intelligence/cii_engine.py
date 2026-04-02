@@ -1,3 +1,4 @@
+from __future__ import annotations
 """OrcaFish CII (Country Intelligence Index) Engine — ported from WorldMonitor"""
 from dataclasses import dataclass, field
 from datetime import datetime

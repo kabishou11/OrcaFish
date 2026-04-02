@@ -64,8 +64,8 @@ export function GlobeVisualization({ ciiScores, signals, onCountryClick, autoRot
         if (destroyed || !containerRef.current) return
 
         globe = Globe()(containerRef.current)
-          .globeImageUrl('//unpkg.com/three-globe/example/img/earth-night.jpg')
-          .backgroundImageUrl('//unpkg.com/three-globe/example/img/night-sky.png')
+          .globeImageUrl('//unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
+          .backgroundImageUrl('//unpkg.com/three-globe/example/img/blue-sky.png')
           .atmosphereColor('#4466cc')
           .atmosphereAltitude(0.18)
           .width(containerRef.current.clientWidth)
@@ -87,7 +87,7 @@ export function GlobeVisualization({ ciiScores, signals, onCountryClick, autoRot
             if (!code) return ''
             const score = ciiScores.find(c => c.iso === code)
             if (!score) return ''
-            return `<div style="background:rgba(7,9,15,0.92);border:1px solid ${CII_COLORS[score.level]};border-radius:6px;padding:6px 10px;font-family:monospace;font-size:12px;color:#dce8f5">
+            return `<div style="background:#f0f4f8;border:1px solid ${CII_COLORS[score.level]};border-radius:6px;padding:6px 10px;font-family:monospace;font-size:12px;color:#1a2332">
               <b style="color:${CII_COLORS[score.level]}">${code}</b><br/>
               CII <b>${score.score.toFixed(1)}</b><br/>
               <span style="color:${CII_COLORS[score.level]};font-size:10px">${score.level.toUpperCase()}</span>

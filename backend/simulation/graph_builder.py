@@ -1,10 +1,13 @@
+from __future__ import annotations
 """OrcaFish GraphBuilder - builds Zep knowledge graph from seed documents"""
+
 import uuid
 import os
 from typing import Optional
 from dataclasses import dataclass, field
 from backend.simulation.ontology import OntologyGenerator
 from backend.simulation.config import sim_config
+from backend.graph.graph_builder import GraphBuilder as ZepGraphBuilder
 
 
 @dataclass
@@ -26,6 +29,7 @@ class GraphBuilder:
     def __init__(self, zep_api_key: str = ""):
         self.zep_api_key = zep_api_key or os.getenv("ZEP_API_KEY", "")
         self.ontology_gen: Optional[OntologyGenerator] = None
+        self.zep_builder = ZepGraphBuilder(base_url=os.getenv("ZEP_BASE_URL", ""))
 
     def set_llm(self, llm_client):
         self.ontology_gen = OntologyGenerator(llm_client)
@@ -54,16 +58,21 @@ class GraphBuilder:
                 seed_content, simulation_requirement
             )
 
-        # Step 2: Create Zep graph (if API key available)
-        if self.zep_api_key:
-            await self._create_zep_graph(graph_id, ontology)
-            entity_count, relation_count = await self._ingest_chunks(
-                graph_id, seed_content
-            )
-        else:
-            # Simulate counts for demo
-            entity_count = ontology.get("entity_types", []).__len__() * 3
-            relation_count = ontology.get("relation_types", []).__len__() * 2
+        # Step 2: Create local Zep graph and ingest chunks
+        graph_id = self.zep_builder.create_graph(project_name)
+        self.zep_builder.set_ontology(graph_id, ontology)
+        chunk_size = 500
+        chunk_overlap = 50
+        chunks = []
+        for i in range(0, len(seed_content), chunk_size - chunk_overlap):
+            chunk = seed_content[i:i + chunk_size]
+            if chunk.strip():
+                chunks.append(chunk)
+        episode_ids = self.zep_builder.add_text_batch(graph_id, chunks)
+        self.zep_builder.wait_for_processing(episode_ids)
+        graph_info = self.zep_builder.get_graph_info(graph_id)
+        entity_count = graph_info.node_count
+        relation_count = graph_info.edge_count
 
         return GraphBuildResult(
             project_id=project_id,
@@ -73,30 +82,3 @@ class GraphBuilder:
             ontology=ontology,
         )
 
-    async def _create_zep_graph(self, graph_id: str, ontology: dict):
-        """Create Zep graph with custom schema"""
-        import httpx
-        async with httpx.AsyncClient(
-            base_url="https://api.getzep.com",
-            headers={"Authorization": f"Bearer {self.zep_api_key}"},
-            timeout=30.0,
-        ) as client:
-            # Zep API: create graph with custom entity types
-            # This is a simplified version - actual implementation
-            # would use Zep's specific API
-            pass
-
-    async def _ingest_chunks(self, graph_id: str, content: str) -> tuple[int, int]:
-        """Split content into chunks and ingest into Zep"""
-        # Simple chunking (500 chars, 50 overlap)
-        chunk_size = 500
-        chunk_overlap = 50
-        chunks = []
-        for i in range(0, len(content), chunk_size - chunk_overlap):
-            chunk = content[i:i+chunk_size]
-            if chunk.strip():
-                chunks.append(chunk)
-
-        # Ingest chunks (simplified)
-        # In production: call Zep API to add documents
-        return len(chunks), len(chunks) // 2

@@ -1,8 +1,9 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 
 interface Signal {
   id: string; type: string; country?: string; lat?: number; lon?: number;
-  intensity?: number; timestamp?: string; cii_score?: number
+  intensity?: number; timestamp?: string; cii_score?: number;
+  description?: string
 }
 interface CIIScore {
   iso: string; name?: string; score: number; level: string;
@@ -23,8 +24,58 @@ const CII_GLOBE_COLORS: Record<string, string> = {
 }
 
 const SIGNAL_COLORS: Record<string, string> = {
-  military: '#ff3b5c', protest: '#ff8c42', internet_outage: '#ffd166',
-  diplomatic: '#5eb8ff', economic: '#c084fc', humanitarian: '#44ff88',
+  military: 'var(--critical)', protest: 'var(--high)', internet_outage: 'var(--medium)',
+  diplomatic: 'var(--accent)', economic: '#c084fc', humanitarian: 'var(--low)',
+}
+
+const LEVEL_ZH: Record<string, string> = {
+  low: '低', normal: '正常', elevated: '偏高', high: '高', critical: '紧急',
+}
+
+// ── Signal feed constants ─────────────────────────────────────────────────────
+const SIGNAL_TYPE_DOT: Record<string, string> = {
+  military: '#dc3214', protest: '#dc3214', conflict: '#dc3214',
+  economic: '#28b43c', diplomatic: '#3b82f6',
+  humanitarian: '#9ca3af',
+}
+const SIGNAL_TYPE_ZH: Record<string, string> = {
+  military: '军事', protest: '冲突', conflict: '冲突',
+  internet_outage: '网络', diplomatic: '外交',
+  economic: '经济', humanitarian: '人道',
+}
+
+function relativeTime(ts: string): string {
+  const diff = Date.now() - new Date(ts).getTime()
+  if (diff < 0) return '刚刚'
+  const sec = Math.floor(diff / 1000)
+  if (sec < 60) return `${sec}秒前`
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}分钟前`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}小时前`
+  return `${Math.floor(hr / 24)}天前`
+}
+
+// Inject signal-feed CSS once
+if (typeof document !== 'undefined' && !document.getElementById('signal-feed-css')) {
+  const s = document.createElement('style')
+  s.id = 'signal-feed-css'
+  s.textContent = `
+    @keyframes signal-slide-in {
+      0% { opacity: 0; transform: translateY(-18px); max-height: 0; }
+      100% { opacity: 1; transform: translateY(0); max-height: 120px; }
+    }
+    @keyframes live-pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34,197,94,0.5); }
+      50% { opacity: 0.7; box-shadow: 0 0 0 6px rgba(34,197,94,0); }
+    }
+    .signal-feed-item { animation: signal-slide-in 0.35s ease-out both; }
+    .live-pulse-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #22c55e;
+      display: inline-block; animation: live-pulse 2s ease-in-out infinite;
+    }
+  `
+  document.head.appendChild(s)
 }
 
 // ISO-3166-1 alpha-2 → approximate lat/lon (centroid)
@@ -108,8 +159,8 @@ function GlobePanel({ ciiScores, signals }: { ciiScores: CIIScore[]; signals: Si
         globe = new (Globe as any)(containerRef.current, { animateIn: false })
 
         globe!
-          .globeImageUrl('//unpkg.com/three-globe/example/img/earth-night.jpg')
-          .backgroundImageUrl('//unpkg.com/three-globe/example/img/night-sky.png')
+          .globeImageUrl('//unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
+          .backgroundImageUrl('//unpkg.com/three-globe/example/img/blue-sky.png')
           .atmosphereColor('#4466cc')
           .atmosphereAltitude(0.18)
           .showGraticules(false)
@@ -135,7 +186,7 @@ function GlobePanel({ ciiScores, signals }: { ciiScores: CIIScore[]; signals: Si
             if (!code || code === '-99') return ''
             const score = ciiScores.find(c => c.iso === code)
             if (!score) return ''
-            return `<div style="background:rgba(7,9,15,0.92);border:1px solid ${CII_GLOBE_COLORS[score.level]};border-radius:6px;padding:6px 10px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6;color:#dce8f5">
+            return `<div style="background:rgba(255,255,255,0.95);border:1px solid ${CII_GLOBE_COLORS[score.level]};border-radius:6px;padding:6px 10px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6;color:var(--text-primary)">
               <b style="color:${CII_GLOBE_COLORS[score.level]}">${code}</b>
               <br/>CII <b>${score.score.toFixed(1)}</b>
               <br/><span style="color:${CII_GLOBE_COLORS[score.level]};font-size:10px">${score.level.toUpperCase()}</span>
@@ -155,7 +206,7 @@ function GlobePanel({ ciiScores, signals }: { ciiScores: CIIScore[]; signals: Si
             .htmlAltitude(() => 0.015)
             .htmlElement((d: Record<string, unknown>) => {
               const el = document.createElement('div')
-              const color = SIGNAL_COLORS[d.type as string] || '#5eb8ff'
+              const color = SIGNAL_COLORS[d.type as string] || 'var(--accent)'
               el.innerHTML = `<div style="
                 width:10px;height:10px;border-radius:50%;
                 background:${color};
@@ -278,11 +329,11 @@ function GlobePanel({ ciiScores, signals }: { ciiScores: CIIScore[]; signals: Si
       {/* CII Legend */}
       <div style={{
         position: 'absolute', bottom: 16, left: 16,
-        background: 'rgba(7,9,15,0.88)', border: '1px solid var(--border-bright)',
+        background: 'rgba(255,255,255,0.95)', border: '1px solid var(--border-bright)',
         borderRadius: 'var(--radius-sm)', padding: 'var(--sp-3)',
         backdropFilter: 'blur(8px)', fontSize: '0.7rem',
       }}>
-        <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: '0.65rem' }}>CII Level</div>
+        <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: '0.65rem' }}>风险层级</div>
         {Object.entries(CII_GLOBE_COLORS).map(([level, color]) => (
           <div key={level} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
             <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, boxShadow: `0 0 6px ${color}`, flexShrink: 0, display: 'inline-block' }} />
@@ -294,7 +345,7 @@ function GlobePanel({ ciiScores, signals }: { ciiScores: CIIScore[]; signals: Si
       {selectedCountry && (
         <div style={{
           position: 'absolute', top: 16, right: 16, width: 220,
-          background: 'rgba(7,9,15,0.92)', border: `1px solid ${CII_GLOBE_COLORS[selectedCountry.level] || 'var(--accent)'}`,
+          background: 'rgba(255,255,255,0.95)', border: `1px solid ${CII_GLOBE_COLORS[selectedCountry.level] || 'var(--accent)'}`,
           borderRadius: 'var(--radius)', padding: 'var(--sp-4)',
           backdropFilter: 'blur(8px)',
         }}>
@@ -340,6 +391,53 @@ export default function Intelligence() {
   const [activeTab, setActiveTab] = useState<'signals' | 'cii' | 'monitor'>('signals')
   const [selectedCountry, setSelectedCountry] = useState<CIIScore | null>(null)
   const [domain, setDomain] = useState('all')
+  const [feedSignals, setFeedSignals] = useState<Signal[]>([])
+  const feedSeenIds = useRef(new Set<string>())
+
+  // ── Independent 10s signal feed polling ─────────────────────────
+  const fetchFeed = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/intelligence/signals${domain && domain !== 'all' ? `?domain=${domain}` : ''}`)
+      if (!res.ok) return
+      const d = await res.json()
+      const flat: Signal[] = []
+      for (const cluster of d.clusters ?? []) {
+        for (const sig of cluster.signals ?? []) {
+          const id = `${cluster.country_iso}-${sig.signal_type}-${sig.timestamp ?? ''}`
+          flat.push({
+            id,
+            type: sig.signal_type,
+            country: cluster.country_iso,
+            lat: sig.lat ?? undefined,
+            lon: sig.lon ?? undefined,
+            intensity: sig.count ?? sig.intensity ?? 1,
+            timestamp: sig.timestamp ?? new Date().toISOString(),
+            cii_score: cluster.convergence_score ?? 0,
+            description: sig.description ?? sig.summary ?? `${SIGNAL_TYPE_ZH[sig.signal_type] ?? sig.signal_type}信号`,
+          })
+        }
+      }
+      // Sort by timestamp descending
+      flat.sort((a, b) => new Date(b.timestamp!).getTime() - new Date(a.timestamp!).getTime())
+      setFeedSignals(prev => {
+        const merged = [...flat]
+        // Keep old items that are not in new batch
+        for (const old of prev) {
+          if (!flat.find(f => f.id === old.id)) merged.push(old)
+        }
+        merged.sort((a, b) => new Date(b.timestamp!).getTime() - new Date(a.timestamp!).getTime())
+        return merged.slice(0, 50)
+      })
+      // Track which IDs we've seen for "new" animation
+      for (const s of flat) feedSeenIds.current.add(s.id)
+    } catch { /* silent */ }
+  }, [domain])
+
+  useEffect(() => {
+    fetchFeed()
+    const t = setInterval(fetchFeed, 10000)
+    return () => clearInterval(t)
+  }, [fetchFeed])
 
   useEffect(() => {
     const fetchData = async () => {
@@ -405,7 +503,7 @@ export default function Intelligence() {
 
   const levelBadge = (level: string) => {
     const cls = level === 'critical' ? 'badge-critical' : level === 'high' ? 'badge-high' : level === 'medium' || level === 'elevated' ? 'badge-medium' : 'badge-low'
-    return <span className={`badge ${cls}`}><span className="badge-dot" />{level.toUpperCase()}</span>
+    return <span className={`badge ${cls}`}><span className="badge-dot" />{LEVEL_ZH[level] ?? level}</span>
   }
 
   const scoreColor = (score: number) =>
@@ -421,8 +519,8 @@ export default function Intelligence() {
       {/* ── Page Header ────────────────────────────────────────────── */}
       <div className="page-header">
         <div>
-          <div className="page-title">情报监测</div>
-          <div className="page-subtitle">全球地缘信号实时监控 · 危机强度指数 (CII)</div>
+          <div className="page-title">全球观测</div>
+          <div className="page-subtitle">全球地缘信号实时监控 · 危机强度指数 · 信号汇聚分析</div>
         </div>
         <div className="flex gap-3">
           <span className="badge badge-active"><span className="badge-dot" />{ciiScores.length} 国</span>
@@ -468,7 +566,7 @@ export default function Intelligence() {
             <span className="panel-title">3D 地球 CII 态势</span>
             <div style={{ display: 'flex', gap: 'var(--sp-3)', alignItems: 'center' }}>
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                {ciiScores.length} countries
+                {ciiScores.length} 个国家
               </span>
               <span className="live-dot" style={{ marginLeft: 4 }} />
             </div>
@@ -554,6 +652,84 @@ export default function Intelligence() {
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* ── Globe Statistics Bar ──────────────────────────────────── */}
+      <div style={{
+        display: 'flex', gap: 'var(--sp-5)', padding: 'var(--sp-3) var(--sp-4)',
+        background: 'var(--bg-surface)', border: '1px solid var(--border-bright)',
+        borderRadius: 'var(--radius-sm)', fontSize: '0.75rem', fontFamily: 'var(--font-mono)',
+        color: 'var(--text-muted)', alignItems: 'center',
+      }}>
+        <span>信号总数 <b style={{ color: 'var(--accent)' }}>{signals.length}</b></span>
+        <span style={{ width: 1, height: 14, background: 'var(--border)' }} />
+        <span>活跃国家 <b style={{ color: 'var(--text-primary)' }}>{new Set(signals.map(s => s.country).filter(Boolean)).size}</b></span>
+        <span style={{ width: 1, height: 14, background: 'var(--border)' }} />
+        <span>高危国家 <b style={{ color: 'var(--critical)' }}>{criticalCount}</b></span>
+        <span style={{ width: 1, height: 14, background: 'var(--border)' }} />
+        <span>信号流 <b style={{ color: 'var(--text-primary)' }}>{feedSignals.length}</b> 条</span>
+      </div>
+
+      {/* ── Real-time Signal Feed Panel ───────────────────────────── */}
+      <div className="panel">
+        <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span className="panel-title">实时信号流</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span className="live-pulse-dot" />
+            <span style={{ fontSize: '0.72rem', color: '#22c55e', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>实时</span>
+          </div>
+        </div>
+        <div style={{ height: 300, overflowY: 'auto', padding: '0 var(--sp-3) var(--sp-3)' }}>
+          {feedSignals.length === 0 ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+              暂无信号，等待数据采集...
+            </div>
+          ) : feedSignals.map((s, idx) => {
+            const dotColor = SIGNAL_TYPE_DOT[s.type] ?? '#9ca3af'
+            const intensityPct = Math.min((s.intensity ?? 0) * (s.intensity && s.intensity > 1 ? 1 : 100), 100)
+            return (
+              <div key={s.id} className="signal-feed-item" style={{
+                padding: 'var(--sp-2) var(--sp-3)', marginBottom: 4,
+                borderRadius: 'var(--radius-sm)', background: idx === 0 ? 'rgba(59,130,246,0.04)' : 'transparent',
+                border: '1px solid var(--border)', transition: 'background 0.2s',
+                animationDelay: `${Math.min(idx * 30, 300)}ms`,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)' }}>
+                  {/* Type dot */}
+                  <span style={{
+                    width: 10, height: 10, borderRadius: '50%', background: dotColor, flexShrink: 0,
+                    boxShadow: `0 0 6px ${dotColor}88`,
+                  }} />
+                  {/* Country + description */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem' }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--text-primary)' }}>
+                        {s.country ?? '??'}
+                      </span>
+                      <span style={{ color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {s.description ?? `${SIGNAL_TYPE_ZH[s.type] ?? s.type}信号`}
+                      </span>
+                    </div>
+                  </div>
+                  {/* Timestamp */}
+                  <span style={{
+                    fontSize: '0.68rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)',
+                    whiteSpace: 'nowrap', flexShrink: 0,
+                  }}>
+                    {s.timestamp ? relativeTime(s.timestamp) : '—'}
+                  </span>
+                </div>
+                {/* Intensity bar */}
+                <div style={{ marginTop: 4, height: 2, background: 'var(--border)', borderRadius: 99, overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%', width: `${intensityPct}%`, background: dotColor,
+                    borderRadius: 99, transition: 'width 0.3s ease',
+                  }} />
+                </div>
+              </div>
+            )
+          })}
         </div>
       </div>
 
@@ -673,7 +849,7 @@ export default function Intelligence() {
                 <div key={ds} style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', fontSize: '0.85rem' }}>
                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--low)', boxShadow: '0 0 6px var(--low)', flexShrink: 0 }} />
                   <span>{ds}</span>
-                  <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.72rem', fontFamily: 'var(--font-mono)' }}>ACTIVE</span>
+                  <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.72rem', fontFamily: 'var(--font-mono)' }}>活跃</span>
                 </div>
               ))}
             </div>
@@ -733,3 +909,4 @@ function CloseIcon() {
     </svg>
   )
 }
+

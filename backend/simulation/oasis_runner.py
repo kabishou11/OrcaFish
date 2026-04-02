@@ -1,3 +1,4 @@
+from __future__ import annotations
 """OrcaFish OASIS Runner — manages agent-based social simulation"""
 import os
 import asyncio

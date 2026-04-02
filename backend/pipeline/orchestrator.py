@@ -1,3 +1,4 @@
+from __future__ import annotations
 """OrcaFish Pipeline Orchestrator — zero-human three-stage pipeline"""
 import asyncio
 import uuid
@@ -204,33 +205,25 @@ class PipelineOrchestrator:
         return html
 
     async def _run_simulation(self, trigger: TriggerEvent, seed_content: str) -> str:
-        """Run MiroFish OASIS simulation"""
-        from backend.llm.client import LLMClient
-        from backend.simulation import OntologyGenerator, GraphBuilder, OASISRunner, SimulationReportAgent
+        """Run MiroFish OASIS simulation via Zep CE knowledge graph + OASISRunner"""
+        from backend.simulation import OASISRunner, SimulationReportAgent
+        from backend.graph import GraphBuilder
 
-        llm = LLMClient(
-            api_key=settings.insight_llm.api_key,
-            base_url=settings.insight_llm.base_url,
-            model=settings.insight_llm.model,
-            provider=settings.insight_llm.provider,
+        # Step 1: Build knowledge graph in Zep CE
+        builder = GraphBuilder()  # 从 config 读取 zep_base_url
+        graph_id = builder.create_graph(
+            name=f"OrcaFish_{trigger.country_iso}_{datetime.utcnow().strftime('%Y%m%d')}"
         )
-
-        # Step 1: Build knowledge graph from seed
-        builder = GraphBuilder(zep_api_key=settings.zep_api_key)
-        builder.set_llm(llm)
-
-        graph_result = await builder.build(
-            seed_content=seed_content,
-            project_name=f"OrcaFish_{trigger.country_iso}_{datetime.utcnow().strftime('%Y%m%d')}",
-            simulation_requirement=f"预测{trigger.country_name}地区未来72小时内的局势演化",
-        )
+        # 将 seed_content 分块写入图谱
+        chunks = [seed_content[i:i+500] for i in range(0, min(len(seed_content), 5000), 500)]
+        builder.add_text_batch(graph_id, chunks)
 
         # Step 2: Create OASIS simulation
         runner = OASISRunner()
         sim_id, sim_dir = runner.create_simulation({
             "simulation_id": f"sim_{uuid.uuid4().hex[:12]}",
-            "project_id": graph_result.project_id,
-            "graph_id": graph_result.graph_id,
+            "project_id": graph_id,
+            "graph_id": graph_id,
         })
 
         state = self._pipelines.get(trigger.country_iso)
@@ -238,7 +231,7 @@ class PipelineOrchestrator:
         for p in self._pipelines.values():
             if abs(p.cii_score - trigger.cii_score) < 0.1 and p.country_iso == trigger.country_iso:
                 p.simulation_id = sim_id
-                p.simulation_project_id = graph_result.project_id
+                p.simulation_project_id = graph_id
 
         # Step 3: Start simulation
         status = await runner.start(

@@ -65,13 +65,13 @@ export default function PipelinePage() {
       {/* ── Page Header ─────────────────────────────────────────── */}
       <div className="page-header">
         <div>
-          <div className="page-title">数据流水线</div>
-          <div className="page-subtitle">WM 信号检测 · BettaFish 舆情分析 · MiroFish 仿真预测</div>
+          <div className="page-title">自动流程</div>
+          <div className="page-subtitle">信号发现 · 议题研判 · 群体推演 · 三阶段自动编排</div>
         </div>
         <div className="flex gap-3">
           <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', color: wsConnected ? 'var(--low)' : 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: wsConnected ? 'var(--low)' : 'var(--text-muted)', boxShadow: wsConnected ? '0 0 6px var(--low)' : 'none', display: 'inline-block' }} />
-            WS {wsConnected ? 'LIVE' : 'OFFLINE'}
+            {wsConnected ? '实时连接' : '连接断开'}
           </span>
           <span className="badge badge-active"><span className="badge-dot" />{pipelines.length} 条流水线</span>
         </div>
@@ -83,9 +83,9 @@ export default function PipelinePage() {
         <div className="panel-body">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--sp-4)' }}>
             {[
-              { step: 1, name: '信号检测', desc: 'WorldMonitor CII + 信号汇聚', icon: <RadarIcon />, color: 'var(--accent)', glow: 'rgba(94,184,255,0.2)' },
-              { step: 2, name: '舆情分析', desc: 'BettaFish 多引擎搜索 + 报告', icon: <SearchIcon />, color: 'var(--low)', glow: 'rgba(68,255,136,0.2)' },
-              { step: 3, name: '仿真预测', desc: 'MiroFish OASIS 群体智能', icon: <FishIcon />, color: 'var(--medium)', glow: 'rgba(255,209,102,0.2)' },
+              { step: 1, name: '信号发现', desc: '全球观测 CII 计算 + 信号汇聚触发', icon: <RadarIcon />, color: 'var(--accent)', glow: 'rgba(37,99,235,0.08)' },
+              { step: 2, name: '议题研判', desc: '多引擎搜索 + 情感分析 + 研判报告', icon: <SearchIcon />, color: 'var(--low)', glow: 'rgba(22,163,74,0.08)' },
+              { step: 3, name: '群体推演', desc: 'OASIS 群体智能 · 关系图谱推演', icon: <FishIcon />, color: 'var(--medium)', glow: 'rgba(217,119,6,0.08)' },
             ].map((s, i) => (
               <div key={s.step} style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-4)', padding: 'var(--sp-4)', borderRadius: 'var(--radius)', border: `1px solid ${s.color}44`, background: s.glow }}>
                 {/* Step number */}
@@ -181,7 +181,7 @@ export default function PipelinePage() {
             </div>
             {events.length > 0 && (
               <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                {events.length} events
+                {events.length} 条事件
               </span>
             )}
           </div>
@@ -191,7 +191,7 @@ export default function PipelinePage() {
               {events.length === 0 ? (
                 <div className="empty-state" style={{ padding: 'var(--sp-8)' }}>
                   <LiveIcon />
-                  <p style={{ fontSize: '0.78rem' }}>等待 WebSocket 事件...</p>
+                  <p style={{ fontSize: '0.78rem' }}>等待实时事件推送...</p>
                 </div>
               ) : (
                 events.map((evt, i) => {

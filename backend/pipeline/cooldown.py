@@ -1,3 +1,4 @@
+from __future__ import annotations
 """OrcaFish Cooldown Manager — prevents duplicate triggers per region"""
 import asyncio
 from datetime import datetime, timedelta

@@ -45,9 +45,9 @@ export function getCIITooltip(info: PickingInfo, ciiScores: CIIScore[]): string 
   const score = ciiScores.find(c => c.iso === code)
   if (!score) return null
   const color = CII_COLORS[score.level]
-  return `<div style="background:rgba(7,9,15,0.95);border:1px solid rgb(${color[0]},${color[1]},${color[2]});border-radius:4px;padding:8px;font-family:monospace;font-size:11px;color:#dce8f5">
+  return `<div style="background:#f0f4f8;border:1px solid rgb(${color[0]},${color[1]},${color[2]});border-radius:4px;padding:8px;font-family:monospace;font-size:11px;color:#1a2332">
     <b style="color:rgb(${color[0]},${color[1]},${color[2]})">${code}</b> ${score.name || ''}<br/>
-    CII Score: <b>${score.score.toFixed(1)}</b><br/>
-    Level: <span style="color:rgb(${color[0]},${color[1]},${color[2]})">${score.level.toUpperCase()}</span>
+    CII 指数: <b>${score.score.toFixed(1)}</b><br/>
+    等级: <span style="color:rgb(${color[0]},${color[1]},${color[2]})">${score.level.toUpperCase()}</span>
   </div>`
 }
