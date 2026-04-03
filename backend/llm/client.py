@@ -45,6 +45,21 @@ class LLMClient:
             "api_version": None,
             "base_url": "https://api-inference.modelscope.cn/v1",
         },
+        "minimax": {
+            "api_type": "openai",
+            "api_version": None,
+            "base_url": "https://api.minimaxi.com/v1",
+        },
+    }
+
+    PROVIDER_ENV_KEYS: Dict[str, list[str]] = {
+        "modelscope": ["MODELSCOPE_API_KEY"],
+        "minimax": ["MINIMAX_API_KEY"],
+        "openai": ["OPENAI_API_KEY"],
+        "deepseek": ["DEEPSEEK_API_KEY"],
+        "gemini": ["GEMINI_API_KEY"],
+        "kimi": ["KIMI_API_KEY"],
+        "qwen": ["QWEN_API_KEY"],
     }
 
     def __init__(
@@ -55,6 +70,7 @@ class LLMClient:
         provider: str = "openai",
         timeout: int = 180,
         max_retries: int = 3,
+        reasoning_split: bool = False,
     ):
         """
         Initialize the unified LLM client.
@@ -69,9 +85,16 @@ class LLMClient:
         """
         # Try multiple common env var names as fallback
         _env_keys = [
-            "LLM_API_KEY", "MODELSCOPE_API_KEY", "OPENAI_API_KEY",
-            "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "KIMI_API_KEY",
-            "API_KEY", "OPENAI_KEY",
+            *self.PROVIDER_ENV_KEYS.get(provider, []),
+            "LLM_API_KEY",
+            "OPENAI_API_KEY",
+            "MODELSCOPE_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "GEMINI_API_KEY",
+            "KIMI_API_KEY",
+            "MINIMAX_API_KEY",
+            "API_KEY",
+            "OPENAI_KEY",
         ]
         _fallback_key = next((os.getenv(k) for k in _env_keys if os.getenv(k)), "")
         self.api_key = api_key or _fallback_key
@@ -79,6 +102,7 @@ class LLMClient:
         self.provider = provider
         self.timeout = timeout
         self.max_retries = max_retries
+        self.reasoning_split = reasoning_split
 
         # Resolve effective base URL
         if base_url:
@@ -134,6 +158,7 @@ class LLMClient:
                     ],
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    extra_body={"reasoning_split": True} if self.reasoning_split else None,
                 )
                 content = response.choices[0].message.content
                 return content if content is not None else ""
@@ -171,6 +196,7 @@ class LLMClient:
             ],
             temperature=temperature,
             stream=True,
+            extra_body={"reasoning_split": True} if self.reasoning_split else None,
         )
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:

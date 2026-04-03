@@ -694,6 +694,7 @@ class SimulationRunner:
                 base_url=settings.insight_llm.base_url,
                 model=settings.insight_llm.model,
                 provider=settings.insight_llm.provider,
+                reasoning_split=settings.insight_llm.reasoning_split,
             )
             system_prompt = "You are an agent in a social media simulation. Answer the question as your character would."
             user_prompt = f"Recent actions:\n{context}\n\nQuestion: {prompt}"

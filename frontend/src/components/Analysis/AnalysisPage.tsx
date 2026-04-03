@@ -1,7 +1,31 @@
 import { useEffect, useState, useRef } from 'react'
 import * as echarts from 'echarts'
 import { graphic } from 'echarts'
+import { useNavigate } from 'react-router-dom'
 import { useAnalysisStore, type AnalysisResult } from '../../stores/analysisStore'
+import { useIntelligenceStore } from '../../stores/intelligenceStore'
+import { useSimulationDraftStore } from '../../stores/simulationDraftStore'
+import WorkflowGuide, { type WorkflowGuideStep } from '../WorkflowGuide'
+
+// 从议题文本粗略推断国家和坐标（示例）
+const TOPIC_COORDS: Record<string, [number, number]> = {
+  '台海': [23.7, 121.0], '台湾': [23.7, 121.0],
+  '中美': [39.9, 116.4], '中国': [35.9, 104.2],
+  '南海': [14.0, 115.0],
+  '朝鲜': [40.3, 127.5], '朝鲜半岛': [38.0, 127.0],
+  '俄乌': [48.4, 31.2], '乌克兰': [48.4, 31.2], '俄罗斯': [61.5, 105.3],
+  '中东': [29.3, 47.5], '伊朗': [32.4, 53.7],
+  '欧洲': [50.1, 10.5],
+  '美国': [37.1, -95.7], '日本': [36.2, 138.2],
+  '韩国': [35.9, 127.8],
+}
+
+function extractSignalCoords(q: string): { lat: number; lon: number } | null {
+  for (const [kw, coord] of Object.entries(TOPIC_COORDS)) {
+    if (q.includes(kw)) return { lat: coord[0], lon: coord[1] }
+  }
+  return null
+}
 
 // ── Sentiment Chart ────────────────────────────────────────────────────────────
 function SentimentChart({ query }: { query: string }) {
@@ -25,11 +49,11 @@ function SentimentChart({ query }: { query: string }) {
       tooltip: { trigger: 'item', backgroundColor: 'rgba(255,255,255,0.97)', borderColor: '#e2e8f0', textStyle: { color: '#1a2332', fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 } },
       legend: { bottom: 0, textStyle: { color: '#8fa3b8', fontSize: 11, fontFamily: "'IBM Plex Mono', monospace" } },
       series: [{
-        type: 'pie', radius: ['42%', '70%'], center: ['50%', '45%'],
+        type: 'pie', radius: ['48%', '74%'], center: ['50%', '45%'],
         avoidLabelOverlap: true,
         itemStyle: { borderRadius: 6, borderColor: '#f0f4f8', borderWidth: 2 },
-        label: { show: true, color: '#4a5d73', fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", formatter: '{b}\n{d}%' },
-        labelLine: { lineStyle: { color: 'rgba(37,99,235,0.3)' } },
+        label: { show: true, color: '#fff', fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", formatter: '{b}\n{d}%', fontWeight: 600 },
+        labelLine: { show: false },
         data: sentimentData,
         emphasis: {
           itemStyle: { shadowBlur: 12, shadowColor: 'rgba(37,99,235,0.2)' },
@@ -45,9 +69,8 @@ function SentimentChart({ query }: { query: string }) {
   }, [query])
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
-      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>舆情立场分布</div>
-      <div ref={chartRef} style={{ width: '100%', height: 200 }} />
+    <div style={{ width: '100%', height: '100%', minHeight: 260, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+      <div ref={chartRef} style={{ width: '100%', flex: 1, minHeight: 220 }} />
     </div>
   )
 }
@@ -108,8 +131,8 @@ function CIITrendChart() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
-      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>CII 趋势</div>
-      <div ref={chartRef} style={{ width: '100%', height: 220 }} />
+      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.03em' }}>CII 趋势</div>
+      <div ref={chartRef} style={{ width: '100%', height: 300 }} />
     </div>
   )
 }
@@ -161,8 +184,8 @@ function MediaFlowSankey() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
-      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>舆情传播路径</div>
-      <div ref={chartRef} style={{ width: '100%', height: 200 }} />
+      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.03em' }}>舆情传播路径</div>
+      <div ref={chartRef} style={{ width: '100%', height: 260 }} />
     </div>
   )
 }
@@ -212,8 +235,8 @@ function KeywordChart() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
-      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>热词频次</div>
-      <div ref={chartRef} style={{ width: '100%', height: 200 }} />
+      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.03em' }}>热词频次</div>
+      <div ref={chartRef} style={{ width: '100%', height: 260 }} />
     </div>
   )
 }
@@ -229,16 +252,41 @@ const AGENTS = [
 
 // ── Main Analysis Page ────────────────────────────────────────────────────────
 export default function AnalysisPage() {
+  const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const result = useAnalysisStore((s) => s.result)
   const setResult = useAnalysisStore((s) => s.setResult)
   const [error, setError] = useState<string | null>(null)
   const [agentStatuses, setAgentStatuses] = useState<AgentStatus[]>(['idle', 'idle', 'idle'])
+  const [_activeQuery, setActiveQuery] = useState('')
+  const injectSignal = useIntelligenceStore(s => s.injectSignal)
+  const setSimulationDraft = useSimulationDraftStore((s) => s.setDraft)
+  const workflowSteps: WorkflowGuideStep[] = [
+    {
+      label: 'STEP 1',
+      title: '先输入要追踪的议题',
+      description: '把冲突、地区或政策议题输入进来，系统会据此发起多源检索。',
+      status: loading ? 'done' : 'active' as const,
+    },
+    {
+      label: 'STEP 2',
+      title: '等待多代理并行研判',
+      description: '搜索、媒体、洞察三路会并行抓取、清洗并合成结构化结论。',
+      status: loading ? 'active' : result?.status === 'completed' ? 'done' : 'pending' as const,
+    },
+    {
+      label: 'STEP 3',
+      title: '把结果送入未来推演',
+      description: '研判完成后直接把摘要与要求送入推演工作台，不需要重复输入。',
+      status: result?.status === 'completed' ? 'active' : 'pending' as const,
+    },
+  ]
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!query.trim()) return
+    setActiveQuery(query.trim())
     setLoading(true); setError(null); setResult(null)
     // Stagger agent activation for visual effect
     setAgentStatuses(['running', 'idle', 'idle'])
@@ -253,14 +301,14 @@ export default function AnalysisPage() {
       if (!res.ok) { const err = await res.json(); throw new Error(err.detail ?? '分析请求失败') }
       const data: AnalysisResult = await res.json()
       setResult(data)
-      if (data.task_id) pollResult(data.task_id)
+      if (data.task_id) pollResult(data.task_id, query.trim())
     } catch (err) {
       setError(err instanceof Error ? err.message : '未知错误')
       setAgentStatuses(['idle', 'idle', 'idle'])
     } finally { setLoading(false) }
   }
 
-  const pollResult = async (taskId: string) => {
+  const pollResult = async (taskId: string, topicQuery: string) => {
     for (let i = 0; i < 60; i++) {
       await new Promise(r => setTimeout(r, 3000))
       try {
@@ -268,7 +316,24 @@ export default function AnalysisPage() {
         if (res.ok) {
           const data: AnalysisResult = await res.json()
           setResult(data)
-          if (data.status === 'completed' || data.status === 'failed') {
+          if (data.status === 'completed') {
+            setAgentStatuses(['done', 'done', 'done'])
+            // 分析完成 → 注入信号到情报地球
+            const coords = extractSignalCoords(topicQuery)
+            injectSignal({
+              id: `analysis-${taskId}`,
+              type: 'diplomatic',
+              lat: coords?.lat,
+              lon: coords?.lon,
+              intensity: 0.9,
+              timestamp: new Date().toISOString(),
+              description: `议题研判：${topicQuery}`,
+              source: 'analysis',
+              query: topicQuery,
+            })
+            break
+          }
+          if (data.status === 'failed') {
             setAgentStatuses(['done', 'done', 'done'])
             break
           }
@@ -304,6 +369,21 @@ export default function AnalysisPage() {
     boxShadow: focused ? '0 0 0 3px var(--accent-dim)' : 'none',
   })
 
+  const handleSendToSimulation = () => {
+    const topic = query.trim() || '议题推演'
+    const htmlText = result?.html_report?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() ?? ''
+    const seed = result?.query_report?.trim() || htmlText || topic
+    setSimulationDraft({
+      name: `${topic} 推演`,
+      seed_content: seed,
+      simulation_requirement: `请基于以下研判结果，构建关键参与方关系图谱并推演未来 72 小时的舆情与行动演化：${topic}`,
+      max_rounds: 48,
+      source: 'analysis',
+      source_task_id: result?.task_id,
+    })
+    navigate('/simulation')
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-6)', maxWidth: 1200 }}>
 
@@ -322,6 +402,29 @@ export default function AnalysisPage() {
           </span>
         </div>
       </div>
+
+      <WorkflowGuide
+        eyebrow="ANALYSIS PLAYBOOK"
+        title="先研判，再决定是否进入推演"
+        description="这一页负责把一个模糊议题拆成可操作结论。今晚演示时，最顺的方式是先输入议题，等报告出来后直接送去未来推演。"
+        steps={workflowSteps}
+        actions={
+          <>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setQuery('台海局势升级后的舆论演化')}>
+              使用演示议题
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={!result || result.status !== 'completed'}
+              onClick={handleSendToSimulation}
+              style={{ opacity: !result || result.status !== 'completed' ? 0.45 : 1 }}
+            >
+              送入未来推演
+            </button>
+          </>
+        }
+      />
 
       {/* ── Hero Input Area ─────────────────────────────────────── */}
       <div style={{
@@ -434,43 +537,43 @@ export default function AnalysisPage() {
       </div>
 
       {/* ── Data Dashboard ──────────────────────────────────────── */}
-      {/* Row 1: CII Trend (2fr) + Sentiment Pie (1fr) */}
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 'var(--sp-4)' }}>
-        <div className="panel">
+      {/* Row 1: CII Trend (1fr) + Sentiment Pie (1fr) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-4)' }}>
+        <div className="panel" style={{ minWidth: 0 }}>
           <div className="panel-header">
             <span className="panel-title">CII 趋势</span>
             <span className="badge badge-active"><span className="badge-dot" />实时</span>
           </div>
-          <div className="panel-body">
+          <div className="panel-body" style={{ minHeight: 340 }}>
             <CIITrendChart />
           </div>
         </div>
-        <div className="panel">
+        <div className="panel" style={{ minWidth: 0 }}>
           <div className="panel-header">
             <span className="panel-title">舆情态势</span>
           </div>
-          <div className="panel-body">
+          <div className="panel-body" style={{ height: 340 }}>
             <SentimentChart query={query} />
           </div>
         </div>
       </div>
 
       {/* Row 2: Keywords (1fr) + Sankey (1fr) */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-4)' }}>
-        <div className="panel">
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 'var(--sp-4)' }}>
+        <div className="panel" style={{ minWidth: 0 }}>
           <div className="panel-header">
             <span className="panel-title">热词分析</span>
             <span className="badge badge-normal">TOP 8</span>
           </div>
-          <div className="panel-body">
+          <div className="panel-body" style={{ minHeight: 300 }}>
             <KeywordChart />
           </div>
         </div>
-        <div className="panel">
+        <div className="panel" style={{ minWidth: 0 }}>
           <div className="panel-header">
             <span className="panel-title">舆情传播路径</span>
           </div>
-          <div className="panel-body">
+          <div className="panel-body" style={{ minHeight: 300 }}>
             <MediaFlowSankey />
           </div>
         </div>
@@ -507,11 +610,35 @@ export default function AnalysisPage() {
             ) : result.status === 'failed' ? (
               <div style={{ color: '#ff3b5c', fontSize: '0.875rem' }}>{result.error ?? '分析失败，请重试'}</div>
             ) : result.html_report ? (
-              <div
-                className="report-body"
-                style={{ fontSize: '0.875rem', lineHeight: 1.9, color: 'var(--text-secondary)', maxHeight: 600, overflowY: 'auto', padding: 'var(--sp-4)', background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}
-                dangerouslySetInnerHTML={{ __html: result.html_report }}
-              />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 'var(--sp-3)',
+                  padding: 'var(--sp-4)',
+                  background: 'linear-gradient(135deg, rgba(37,99,235,0.05), rgba(14,165,233,0.03))',
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-sm)',
+                }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: '0.86rem', color: 'var(--text-primary)', marginBottom: 4 }}>
+                      研判已完成，可直接送入未来推演
+                    </div>
+                    <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                      将当前议题、正文抽取结果与综合研判摘要预填到 MiroFish 风格推演工作台
+                    </div>
+                  </div>
+                  <button type="button" className="btn btn-primary" onClick={handleSendToSimulation}>
+                    <PlayIcon /> 送入未来推演
+                  </button>
+                </div>
+                <div
+                  className="report-body"
+                  style={{ fontSize: '0.875rem', lineHeight: 1.9, color: 'var(--text-secondary)', maxHeight: 600, overflowY: 'auto', padding: 'var(--sp-4)', background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}
+                  dangerouslySetInnerHTML={{ __html: result.html_report }}
+                />
+              </div>
             ) : (
               <div className="empty-state"><p>暂无报告内容</p></div>
             )}

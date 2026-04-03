@@ -1,4 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
+import { NavLink } from 'react-router-dom'
+import WorkflowGuide, { type WorkflowGuideStep } from '../WorkflowGuide'
 
 interface PipelineEvent { event_type: string; pipeline_id: string; data: Record<string, unknown>; timestamp: string }
 interface Pipeline {
@@ -59,6 +61,36 @@ export default function PipelinePage() {
 
   useEffect(() => { eventsEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [events])
 
+  const stageCounts = {
+    detected: pipelines.filter((p) => p.stage === 'detected').length,
+    analysis: pipelines.filter((p) => p.stage === 'analysis').length,
+    simulation: pipelines.filter((p) => p.stage === 'simulation').length,
+    completed: pipelines.filter((p) => p.stage === 'completed').length,
+    failed: pipelines.filter((p) => p.stage === 'failed').length,
+  }
+  const activeCount = pipelines.filter((p) => !['completed', 'failed'].includes(p.stage)).length
+  const latestPipeline = pipelines[0]
+  const workflowSteps: WorkflowGuideStep[] = [
+    {
+      label: 'STEP 1',
+      title: '先等待信号触发',
+      description: '世界监测器会先把高风险地区和异常聚合成一条可编排流水线。',
+      status: pipelines.length > 0 ? 'done' : 'active' as const,
+    },
+    {
+      label: 'STEP 2',
+      title: '再进入议题研判',
+      description: '当阶段进入 analysis，就说明抓取、正文抽取和研判正在推进。',
+      status: stageCounts.analysis > 0 ? 'active' : stageCounts.simulation + stageCounts.completed > 0 ? 'done' : 'pending' as const,
+    },
+    {
+      label: 'STEP 3',
+      title: '最后把结果送去推演',
+      description: '当阶段进入 simulation 或 completed，说明链路已经推进到推演闭环。',
+      status: stageCounts.simulation > 0 ? 'active' : stageCounts.completed > 0 ? 'done' : 'pending' as const,
+    },
+  ]
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)' }}>
 
@@ -75,6 +107,79 @@ export default function PipelinePage() {
           </span>
           <span className="badge badge-active"><span className="badge-dot" />{pipelines.length} 条流水线</span>
         </div>
+      </div>
+
+      <WorkflowGuide
+        eyebrow="PIPELINE PLAYBOOK"
+        title="先发现异常，再研判，再推进推演"
+        description="自动流程页不是独立功能，而是全链路编排总线。这里更适合回答“系统现在推进到了哪一步”，而不是手动做分析本身。"
+        steps={workflowSteps}
+        actions={
+          <>
+            <NavLink to="/analysis" className="btn btn-secondary btn-sm" style={{ textDecoration: 'none' }}>
+              打开研判台
+            </NavLink>
+            <NavLink to="/simulation" className="btn btn-primary btn-sm" style={{ textDecoration: 'none' }}>
+              打开推演台
+            </NavLink>
+          </>
+        }
+      />
+
+      {/* ── Workflow Summary ───────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr', gap: 'var(--sp-4)' }}>
+        <div className="panel" style={{ overflow: 'hidden' }}>
+          <div className="panel-body" style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--sp-3)',
+            background: 'linear-gradient(135deg, rgba(37,99,235,0.05), rgba(14,165,233,0.02))',
+          }}>
+            <div style={{ fontSize: '0.72rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
+              ORCHESTRATION BUS
+            </div>
+            <div style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+              观测、研判、推演已串成一条自动化总线
+            </div>
+            <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+              当前共有 {pipelines.length} 条流水线记录，{activeCount} 条正在推进。系统会把触发信号送入议题研判，再把可用结论送入未来推演。
+            </div>
+            <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+              <NavLink to="/analysis" className="btn btn-secondary btn-sm" style={{ textDecoration: 'none' }}>进入议题研判</NavLink>
+              <NavLink to="/simulation" className="btn btn-primary btn-sm" style={{ textDecoration: 'none' }}>进入未来推演</NavLink>
+            </div>
+            {latestPipeline && (
+              <div style={{
+                padding: 'var(--sp-3)',
+                borderRadius: 'var(--radius-sm)',
+                background: 'rgba(255,255,255,0.82)',
+                border: '1px solid var(--border)',
+                fontSize: '0.74rem',
+                color: 'var(--text-secondary)',
+              }}>
+                最近一条: <span style={{ fontWeight: 700 }}>{latestPipeline.country_name || latestPipeline.country_iso || latestPipeline.pipeline_id}</span>
+                {' · '}
+                <span style={{ color: 'var(--accent)' }}>{STAGE_LABELS[latestPipeline.stage] ?? latestPipeline.stage}</span>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+              <NavLink to="/analysis" className="btn btn-secondary btn-sm" style={{ textDecoration: 'none' }}>前往议题研判</NavLink>
+              <NavLink to="/simulation" className="btn btn-primary btn-sm" style={{ textDecoration: 'none' }}>前往未来推演</NavLink>
+            </div>
+          </div>
+        </div>
+        {[
+          { label: '待研判', value: stageCounts.analysis, accent: 'var(--accent)' },
+          { label: '推演中', value: stageCounts.simulation, accent: 'var(--medium)' },
+          { label: '已完成', value: stageCounts.completed, accent: 'var(--low)' },
+        ].map((item) => (
+          <div key={item.label} className="panel">
+            <div className="panel-body" style={{ textAlign: 'center', padding: 'var(--sp-5)' }}>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: 6, letterSpacing: '0.06em' }}>{item.label}</div>
+              <div style={{ fontSize: '2rem', fontWeight: 800, fontFamily: 'var(--font-mono)', color: item.accent }}>{item.value}</div>
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* ── Stage Diagram ───────────────────────────────────────── */}
@@ -136,6 +241,13 @@ export default function PipelinePage() {
                       <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'var(--accent)', marginBottom: 4 }}>
                         {p.pipeline_id}
                       </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: 6, lineHeight: 1.5 }}>
+                        {p.stage === 'detected' && '已完成信号聚合，等待进入议题研判。'}
+                        {p.stage === 'analysis' && '正在进行正文抓取、线索融合与综合研判。'}
+                        {p.stage === 'simulation' && '已进入未来推演，正在等待代理体行动和状态收敛。'}
+                        {p.stage === 'completed' && '整条流水线已闭环完成，可回看研判与推演结果。'}
+                        {p.stage === 'failed' && '流水线在处理中断，需要检查事件流与错误信息。'}
+                      </div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)', alignItems: 'center' }}>
                         <span className={`badge ${STAGE_BADGE[p.stage] ?? 'badge-pending'}`}>
                           <span className="badge-dot" />{STAGE_LABELS[p.stage] ?? p.stage}
@@ -146,6 +258,14 @@ export default function PipelinePage() {
                         {p.signal_types.slice(0, 2).map(t => (
                           <span key={t} style={{ fontSize: '0.7rem', color: 'var(--text-muted)', padding: '2px 6px', background: 'var(--bg-overlay)', borderRadius: 4 }}>{t}</span>
                         ))}
+                      </div>
+                      <div style={{ display: 'flex', gap: 'var(--sp-2)', marginTop: 'var(--sp-3)', flexWrap: 'wrap' }}>
+                        <NavLink to="/analysis" className="btn btn-secondary btn-sm" style={{ textDecoration: 'none' }}>
+                          查看研判台
+                        </NavLink>
+                        <NavLink to="/simulation" className="btn btn-primary btn-sm" style={{ textDecoration: 'none' }}>
+                          打开推演台
+                        </NavLink>
                       </div>
                     </div>
                   </div>

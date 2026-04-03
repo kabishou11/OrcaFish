@@ -58,9 +58,27 @@ async def list_runs() -> dict:
 
 @router.post("/runs")
 async def create_run(req: SimulationCreateRequest) -> dict:
-    """Create and start a new simulation run"""
+    """Create a new simulation run without starting it immediately"""
     run_id = f"run_{uuid.uuid4().hex[:12]}"
     sim_id = f"sim_{uuid.uuid4().hex[:12]}"
+
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "simulations")
+    os.makedirs(data_dir, exist_ok=True)
+    sim_dir = os.path.join(data_dir, sim_id)
+    os.makedirs(sim_dir, exist_ok=True)
+
+    config_path = os.path.join(sim_dir, "simulation_config.json")
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "simulation_id": sim_id,
+            "name": req.name,
+            "seed_content": req.seed_content,
+            "simulation_requirement": req.simulation_requirement,
+            "time_config": {"total_rounds": req.max_rounds},
+            "max_rounds": req.max_rounds,
+            "enable_twitter": req.enable_twitter,
+            "enable_reddit": req.enable_reddit,
+        }, f, ensure_ascii=False, indent=2)
 
     # Register the run
     run = {
@@ -74,12 +92,10 @@ async def create_run(req: SimulationCreateRequest) -> dict:
         "created_at": datetime.utcnow().isoformat(),
         "final_states": [],
         "duration_ms": None,
+        "seed_content": req.seed_content,
+        "simulation_requirement": req.simulation_requirement,
     }
     _run_registry[run_id] = run
-
-    # Start simulation in background
-    import asyncio
-    asyncio.create_task(_run_simulation_bg(run_id, sim_id, req))
 
     return run
 
@@ -302,10 +318,18 @@ async def start_run(run_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Run not found")
 
     run = _run_registry[run_id]
-    if run["status"] != "created":
+    if run["status"] not in {"created", "paused", "failed"}:
         raise HTTPException(status_code=400, detail="Run already started")
 
     run["status"] = "running"
+    req = SimulationCreateRequest(
+        name=run.get("scenario", "仿真推演"),
+        seed_content=run.get("seed_content", ""),
+        simulation_requirement=run.get("simulation_requirement", ""),
+        max_rounds=run.get("max_rounds", settings.simulation_rounds),
+    )
+    import asyncio
+    asyncio.create_task(_run_simulation_bg(run_id, run["simulation_id"], req))
     return run
 
 
@@ -335,6 +359,21 @@ async def get_run_status(run_id: str) -> dict:
 
     run = _run_registry[run_id]
     sim_id = run.get("simulation_id")
+    if run.get("status") == "created":
+        return {
+            "simulation_id": sim_id,
+            "status": "created",
+            "current_round": 0,
+            "total_rounds": run.get("max_rounds", settings.simulation_rounds),
+            "twitter_current_round": 0,
+            "reddit_current_round": 0,
+            "twitter_actions_count": 0,
+            "reddit_actions_count": 0,
+            "twitter_completed": False,
+            "reddit_completed": False,
+            "recent_actions": [],
+            "is_mock": True,
+        }
 
     # 从 OASISRunner 获取实时轮次
     data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "simulations")

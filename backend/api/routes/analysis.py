@@ -48,24 +48,28 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
         base_url=settings.query_llm.base_url,
         model=settings.query_llm.model,
         provider=settings.query_llm.provider,
+        reasoning_split=settings.query_llm.reasoning_split,
     )
     media_llm = LLMClient(
         api_key=settings.media_llm.api_key,
         base_url=settings.media_llm.base_url,
         model=settings.media_llm.model,
         provider=settings.media_llm.provider,
+        reasoning_split=settings.media_llm.reasoning_split,
     )
     insight_llm = LLMClient(
         api_key=settings.insight_llm.api_key,
         base_url=settings.insight_llm.base_url,
         model=settings.insight_llm.model,
         provider=settings.insight_llm.provider,
+        reasoning_split=settings.insight_llm.reasoning_split,
     )
     report_llm = LLMClient(
         api_key=settings.report_llm.api_key,
         base_url=settings.report_llm.base_url,
         model=settings.report_llm.model,
         provider=settings.report_llm.provider,
+        reasoning_split=settings.report_llm.reasoning_split,
     )
 
     # ── Progress: Initializing agents ──────────────────────────────────

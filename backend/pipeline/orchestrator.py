@@ -170,6 +170,7 @@ class PipelineOrchestrator:
             base_url=settings.query_llm.base_url,
             model=settings.query_llm.model,
             provider=settings.query_llm.provider,
+            reasoning_split=settings.query_llm.reasoning_split,
         )
         query_agent = QueryAgent(llm)
 
@@ -191,6 +192,7 @@ class PipelineOrchestrator:
             base_url=settings.report_llm.base_url,
             model=settings.report_llm.model,
             provider=settings.report_llm.provider,
+            reasoning_split=settings.report_llm.reasoning_split,
         )
         report_agent = ReportAgent(report_llm)
 

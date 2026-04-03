@@ -52,6 +52,7 @@ class OntologyGenerator:
             base_url=settings.query_llm.base_url,
             model=settings.query_llm.model,
             provider=settings.query_llm.provider,
+            reasoning_split=settings.query_llm.reasoning_split,
         )
 
     async def generate(

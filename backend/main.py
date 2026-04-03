@@ -13,6 +13,7 @@ import httpx
 
 from backend.config import settings
 from backend.api.routes import intelligence, analysis, simulation, pipeline, graph
+from backend.report.api import router as report_router
 from backend.api.routes.pipeline import set_orchestrator
 from backend.api.ws import WebSocketBroadcaster
 from backend.pipeline import CooldownManager, PipelineOrchestrator, SignalScheduler
@@ -147,6 +148,7 @@ app.include_router(analysis.router, prefix="/api")
 app.include_router(simulation.router, prefix="/api")
 app.include_router(pipeline.router, prefix="/api")
 app.include_router(graph.router, prefix="/api")
+app.include_router(report_router)
 
 
 @app.get("/health")
@@ -196,6 +198,7 @@ if __name__ == "__main__":
         "backend.main:app",
         host=settings.app_host,
         port=settings.app_port,
-        reload=settings.debug,
+        # 直接运行时优先保证稳定启动；需要热重载时使用 README 中的 uvicorn --reload 命令。
+        reload=False,
         log_level="debug" if settings.debug else "info",
     )

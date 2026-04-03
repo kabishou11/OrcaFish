@@ -1,9 +1,21 @@
 import { useEffect, useState } from 'react'
+import { NavLink } from 'react-router-dom'
 
 interface CIIOverview {
   cii: number
   level: string
   countries: Array<{ iso: string; score: number }>
+  timestamp?: string
+}
+
+interface RawCIIScore {
+  score?: number
+  level?: string
+  name?: string
+}
+
+interface RawCIIResponse {
+  scores?: Record<string, RawCIIScore>
   timestamp?: string
 }
 
@@ -26,7 +38,7 @@ function ScoreRing({ score, level, size = 160 }: { score: number; level: string;
   const color =
     level === 'critical' ? 'var(--critical)' :
     level === 'high'     ? 'var(--high)'     :
-    level === 'medium'   ? 'var(--medium)'   :
+    level === 'elevated' ? 'var(--medium)'   :
                            'var(--low)'
   const r = size * 0.38
   const circ = 2 * Math.PI * r
@@ -167,11 +179,36 @@ export default function Dashboard() {
           fetch('/api/pipeline/'),
         ])
         if (ciiRes.ok) {
-          const d = await ciiRes.json()
-          setCii(d)
+          const d = await ciiRes.json() as RawCIIResponse
+          const scoreEntries = Object.entries(d.scores ?? {})
+            .map(([iso, value]) => ({
+              iso,
+              score: value.score ?? 0,
+              level: value.level ?? 'low',
+            }))
+            .sort((a, b) => b.score - a.score)
+
+          const avgScore = scoreEntries.length > 0
+            ? scoreEntries.reduce((sum, item) => sum + item.score, 0) / scoreEntries.length
+            : 0
+          const derivedLevel =
+            avgScore >= 80 ? 'critical' :
+            avgScore >= 65 ? 'high' :
+            avgScore >= 45 ? 'elevated' :
+            avgScore >= 25 ? 'normal' :
+            'low'
+
+          const overview: CIIOverview = {
+            cii: avgScore,
+            level: derivedLevel,
+            countries: scoreEntries.map(({ iso, score }) => ({ iso, score })),
+            timestamp: d.timestamp,
+          }
+
+          setCii(overview)
           // accumulate history (keep last 7 values for sparkline)
           setCiiHistory(prev => {
-            const next = [...prev, d.cii ?? 0]
+            const next = [...prev, overview.cii]
             return next.length > 7 ? next.slice(-7) : next
           })
         }
@@ -189,7 +226,7 @@ export default function Dashboard() {
   const levelBadgeClass =
     cii?.level === 'critical' ? 'badge-critical' :
     cii?.level === 'high'     ? 'badge-high'     :
-    cii?.level === 'medium'   ? 'badge-medium'   : 'badge-low'
+    cii?.level === 'elevated' ? 'badge-medium'   : 'badge-low'
 
   if (loading) {
     return (
@@ -217,6 +254,8 @@ export default function Dashboard() {
   // sim stats
   const completedSims = simRuns.filter(r => r.status === 'completed').length
   const failedSims = simRuns.filter(r => r.status === 'failed').length
+  const highRiskCountries = cii?.countries?.filter(c => c.score >= 65).slice(0, 4) ?? []
+  const recentPipelines = pipelines.slice(0, 6)
 
   // sparkline fallback: if no history, create mock from country scores
   const sparkData = ciiHistory.length >= 2
@@ -225,96 +264,155 @@ export default function Dashboard() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-6)' }}>
-
-      {/* ═══════════════════════════════════════════════════════════════
-           1. HERO AREA — full-width gradient
-         ═══════════════════════════════════════════════════════════════ */}
       <div style={{
-        background: 'linear-gradient(135deg, #eef2ff 0%, #f0f4f8 60%, #e8f4f8 100%)',
-        borderRadius: 'var(--radius-lg)',
+        background: 'linear-gradient(135deg, #eef4ff 0%, #f7fbff 46%, #eff7f5 100%)',
         border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-lg)',
         padding: 'var(--sp-8)',
         position: 'relative',
         overflow: 'hidden',
       }}>
-        {/* decorative circles */}
-        <div style={{ position: 'absolute', top: -60, right: -60, width: 200, height: 200, borderRadius: '50%', background: 'rgba(37,99,235,0.04)' }} />
-        <div style={{ position: 'absolute', bottom: -40, left: -40, width: 160, height: 160, borderRadius: '50%', background: 'rgba(124,58,237,0.03)' }} />
+        <div style={{ position: 'absolute', top: -70, right: -30, width: 220, height: 220, borderRadius: '50%', background: 'rgba(37,99,235,0.07)' }} />
+        <div style={{ position: 'absolute', bottom: -50, left: -30, width: 180, height: 180, borderRadius: '50%', background: 'rgba(22,163,74,0.05)' }} />
 
-        {/* top row: title + badge */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--sp-6)', position: 'relative' }}>
-          <div>
-            <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--sp-6)', position: 'relative', flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 280, flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', marginBottom: 8 }}>
+              <span style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', letterSpacing: '0.12em', color: 'var(--accent)' }}>
+                ORCAFISH / MIROFISH STYLE OVERVIEW
+              </span>
+              <span className={`badge ${wmStatus?.running ? 'badge-done' : 'badge-pending'}`}>
+                <span className="badge-dot" />
+                {wmStatus?.running ? '监测引擎运行中' : '监测引擎已停止'}
+              </span>
+            </div>
+            <div style={{ fontSize: '1.9rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.03em', lineHeight: 1.1 }}>
               预测总览
             </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: 4, fontFamily: 'var(--font-mono)' }}>
-              OrcaFish 预见中枢 · 全球观测 · 议题研判 · 未来推演
+            <div style={{ marginTop: 10, fontSize: '0.92rem', color: 'var(--text-secondary)', maxWidth: 720, lineHeight: 1.7 }}>
+              把观测信号先收拢成态势，再把研判结果送入推演，最后让自动流程把整条链路跑起来。
+              这里是今天的总入口，也是你进入全球观测、议题研判、未来推演和自动流程的第一站。
+            </div>
+            <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)' }}>
+              <span className={`badge ${levelBadgeClass}`}>
+                <span className="badge-dot" />
+                全球危机指数 {cii?.level?.toUpperCase() ?? '—'}
+              </span>
+              <span className="badge badge-active">
+                <span className="badge-dot" />
+                {pipelines.length} 条自动流程
+              </span>
+              <span className="badge badge-normal">
+                <span className="badge-dot" />
+                {simRuns.length} 次推演记录
+              </span>
             </div>
             {cii?.timestamp && (
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 8, fontFamily: 'var(--font-mono)' }}>
+              <div style={{ marginTop: 10, fontSize: '0.74rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                 数据更新于 {new Date(cii.timestamp).toLocaleString('zh-CN')}
               </div>
             )}
           </div>
-          <div className="flex gap-3" style={{ alignItems: 'center' }}>
-            <span
-              className={`badge ${wmStatus?.running ? 'badge-done' : 'badge-pending'}`}
-              style={wmStatus?.running ? { boxShadow: '0 0 10px var(--accent-dim)' } : undefined}
-            >
-              <span className="badge-dot" />
-              {wmStatus?.running ? '监测引擎运行中' : '监测引擎已停止'}
-            </span>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)', minWidth: 260 }}>
+            <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+              <NavLink to="/analysis" className="btn btn-primary" style={{ textDecoration: 'none' }}>
+                进入议题研判
+              </NavLink>
+              <NavLink to="/simulation" className="btn btn-secondary" style={{ textDecoration: 'none' }}>
+                进入未来推演
+              </NavLink>
+            </div>
+            <NavLink to="/pipeline" className="btn btn-secondary" style={{ textDecoration: 'none', justifyContent: 'center' }}>
+              查看自动流程
+            </NavLink>
           </div>
         </div>
 
-        {/* main hero content: CII ring + KPI cards */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-8)', flexWrap: 'wrap', position: 'relative' }}>
-          {/* CII Ring + Level */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 320px) minmax(0, 1fr)', gap: 'var(--sp-6)', marginTop: 'var(--sp-6)', position: 'relative' }}>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--sp-3)' }}>
             <ScoreRing score={cii?.cii ?? 0} level={cii?.level ?? 'low'} size={180} />
             <span className={`badge ${levelBadgeClass}`} style={{ fontSize: '0.8rem', padding: '4px 14px' }}>
               <span className="badge-dot" />
               全球危机指数 · {cii?.level?.toUpperCase() ?? '—'}
             </span>
+            <div style={{
+              width: '100%',
+              padding: 'var(--sp-3)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'rgba(255,255,255,0.78)',
+              border: '1px solid var(--border)',
+            }}>
+              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: 6, letterSpacing: '0.06em' }}>
+                主线
+              </div>
+              <div style={{ display: 'grid', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)' }} />
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>研判先行，先把信号变成可读结论</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--low)' }} />
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>推演承接，把结论转成情景演化</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--medium)' }} />
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>自动流程把发现、分析、推演串成闭环</span>
+                </div>
+              </div>
+            </div>
           </div>
 
-          {/* 3 KPI glass cards */}
-          <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--sp-4)', minWidth: 320 }}>
-            <StatCard label="活跃信号" value={signalsTotal(pipelines)} sub="全球情报源" accent="var(--accent)" />
-            <StatCard label="推演次数" value={simRuns.length} sub={runningSims > 0 ? `${runningSims} 运行中` : '全部完成'} accent="var(--stage-active)" />
-            <StatCard label="自动流程" value={activePipelines} sub={`共 ${pipelines.length} 条流程`} accent="var(--medium)" />
+          <div style={{ display: 'grid', gridTemplateRows: 'auto auto', gap: 'var(--sp-4)' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 'var(--sp-4)' }}>
+              <StatCard label="活跃信号" value={signalsTotal(pipelines)} sub="全球情报源" accent="var(--accent)" />
+              <StatCard label="推演次数" value={simRuns.length} sub={runningSims > 0 ? `${runningSims} 运行中` : '全部完成'} accent="var(--stage-active)" />
+              <StatCard label="自动流程" value={activePipelines} sub={`共 ${pipelines.length} 条流程`} accent="var(--medium)" />
+            </div>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+              gap: 'var(--sp-3)',
+            }}>
+              {[
+                { label: '观测', value: pipelines.filter(p => p.stage === 'detected').length, color: 'var(--accent)' },
+                { label: '研判', value: pipelines.filter(p => p.stage === 'analysis').length, color: 'var(--high)' },
+                { label: '推演', value: pipelines.filter(p => p.stage === 'simulation').length, color: 'var(--low)' },
+              ].map(step => (
+                <div key={step.label} style={{
+                  padding: 'var(--sp-4)',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px solid var(--border)',
+                  background: 'rgba(255,255,255,0.78)',
+                }}>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', letterSpacing: '0.06em', marginBottom: 8 }}>{step.label}</div>
+                  <div style={{ fontSize: '1.6rem', fontFamily: 'var(--font-mono)', fontWeight: 800, color: step.color }}>{step.value}</div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* ═══════════════════════════════════════════════════════════════
-           2. QUICK LINKS — colored left bar + arrow
-         ═══════════════════════════════════════════════════════════════ */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 'var(--sp-4)' }}>
-        {([
-          { href: '/intelligence', title: '全球观测', desc: '实时信号监控与危机指数计算', icon: <IconRadar />, accent: 'var(--accent)' },
-          { href: '/analysis',    title: '议题研判', desc: '多源舆情聚合与情感分析',     icon: <IconSearch />, accent: 'var(--high)' },
-          { href: '/simulation',  title: '未来推演', desc: '群体智能仿真与情景预测',     icon: <IconChart />, accent: 'var(--low)' },
-          { href: '/pipeline',    title: '自动流程', desc: '三阶段自动化流程编排',       icon: <IconPipeline />, accent: 'var(--medium)' },
-        ] as const).map(item => (
-          <a key={item.href} href={item.href} style={{ textDecoration: 'none', color: 'inherit' }}>
-            <div
-              className="panel"
-              style={{
-                display: 'flex',
-                overflow: 'hidden',
-                transition: 'box-shadow var(--t-base), transform var(--t-base)',
-                cursor: 'pointer',
-                height: '100%',
-              }}
-              onMouseEnter={e => { const el = e.currentTarget; el.style.boxShadow = `0 8px 24px rgba(15,23,42,0.10), inset 4px 0 0 ${item.accent}`; el.style.transform = 'translateY(-3px)' }}
-              onMouseLeave={e => { const el = e.currentTarget; el.style.boxShadow = 'var(--shadow-sm)'; el.style.transform = 'translateY(0)' }}
-            >
-              {/* colored left bar */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 'var(--sp-4)' }}>
+        {[
+          { to: '/intelligence', title: '全球观测', desc: '实时信号监控与危机指数计算', icon: <IconRadar />, accent: 'var(--accent)' },
+          { to: '/analysis', title: '议题研判', desc: '多源舆情聚合与情感分析', icon: <IconSearch />, accent: 'var(--high)' },
+          { to: '/simulation', title: '未来推演', desc: '群体智能仿真与情景预测', icon: <IconChart />, accent: 'var(--low)' },
+          { to: '/pipeline', title: '自动流程', desc: '三阶段自动化流程编排', icon: <IconPipeline />, accent: 'var(--medium)' },
+        ].map(item => (
+          <NavLink key={item.to} to={item.to} style={{ textDecoration: 'none', color: 'inherit' }}>
+            <div className="panel" style={{
+              display: 'flex',
+              alignItems: 'stretch',
+              overflow: 'hidden',
+              minHeight: 92,
+              transition: 'transform var(--t-base), box-shadow var(--t-base)',
+            }}>
               <div style={{ width: 4, background: item.accent, flexShrink: 0 }} />
-              <div style={{ flex: 1, padding: 'var(--sp-4) var(--sp-4)', display: 'flex', alignItems: 'center', gap: 'var(--sp-3)' }}>
+              <div style={{ flex: 1, padding: 'var(--sp-4)', display: 'flex', alignItems: 'center', gap: 'var(--sp-3)' }}>
                 <div style={{
-                  width: 40, height: 40, borderRadius: 10,
+                  width: 42, height: 42, borderRadius: 12,
                   background: 'var(--bg-overlay)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   color: item.accent, flexShrink: 0,
@@ -322,21 +420,18 @@ export default function Dashboard() {
                   {item.icon}
                 </div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: 2 }}>{item.title}</div>
-                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>{item.desc}</div>
+                  <div style={{ fontWeight: 700, fontSize: '0.96rem', marginBottom: 3 }}>{item.title}</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.55 }}>{item.desc}</div>
                 </div>
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" style={{ flexShrink: 0 }}>
                   <path d="M6 3l5 5-5 5" />
                 </svg>
               </div>
             </div>
-          </a>
+          </NavLink>
         ))}
       </div>
 
-      {/* ═══════════════════════════════════════════════════════════════
-           3. DATA OVERVIEW ROW — sparkline + pipeline progress + sim stats
-         ═══════════════════════════════════════════════════════════════ */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 'var(--sp-4)' }}>
         {/* CII Trend sparkline */}
         <div className="panel">
@@ -406,37 +501,32 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ═══════════════════════════════════════════════════════════════
-           4. RECENT PIPELINES TABLE — improved header
-         ═══════════════════════════════════════════════════════════════ */}
-      {pipelines.length > 0 && (
+      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: 'var(--sp-4)' }}>
         <div className="panel">
-          <div className="panel-header" style={{
-            background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f0f4ff 100%)',
-          }}>
+          <div className="panel-header" style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f4f7ff 100%)' }}>
             <span className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round">
                 <path d="M2 4h12M2 8h12M2 12h12" />
               </svg>
               最近流水线
             </span>
-            <a href="/pipeline" style={{ fontSize: '0.78rem', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <NavLink to="/pipeline" style={{ fontSize: '0.78rem', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: 4, textDecoration: 'none' }}>
               查看全部
               <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 3l5 5-5 5" /></svg>
-            </a>
+            </NavLink>
           </div>
           <div style={{ overflowX: 'auto' }}>
             <table className="data-table">
               <thead>
                 <tr>
-                  <th style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f0f4ff 100%)' }}>地区</th>
-                  <th style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f0f4ff 100%)' }}>CII</th>
-                  <th style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f0f4ff 100%)' }}>阶段</th>
-                  <th style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f0f4ff 100%)' }}>创建时间</th>
+                  <th style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f4f7ff 100%)' }}>地区</th>
+                  <th style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f4f7ff 100%)' }}>CII</th>
+                  <th style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f4f7ff 100%)' }}>阶段</th>
+                  <th style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f4f7ff 100%)' }}>创建时间</th>
                 </tr>
               </thead>
               <tbody>
-                {pipelines.slice(0, 8).map(p => {
+                {recentPipelines.length > 0 ? recentPipelines.map(p => {
                   const stageClass =
                     p.stage === 'completed' ? 'badge-done' :
                     p.stage === 'failed'   ? 'badge-failed' :
@@ -449,12 +539,56 @@ export default function Dashboard() {
                       <td className="mono text-muted">{new Date(p.created_at).toLocaleString('zh-CN')}</td>
                     </tr>
                   )
-                })}
+                }) : (
+                  <tr>
+                    <td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 'var(--sp-6)' }}>
+                      暂无流水线记录
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
-      )}
+
+        <div className="panel">
+          <div className="panel-header">
+            <span className="panel-title">高风险地区</span>
+            <span style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+              {highRiskCountries.length} 个重点关注
+            </span>
+          </div>
+          <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
+            {highRiskCountries.length > 0 ? highRiskCountries.map(country => (
+              <div key={country.iso} style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 'var(--sp-3)',
+                padding: 'var(--sp-3)',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border)',
+                background: 'rgba(255,255,255,0.8)',
+              }}>
+                <div>
+                  <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{country.iso}</div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                    {country.score.toFixed(1)} · 进入研判/推演优先队列
+                  </div>
+                </div>
+                <span className="badge badge-critical">
+                  <span className="badge-dot" />
+                  重点
+                </span>
+              </div>
+            )) : (
+              <div className="empty-state" style={{ minHeight: 180 }}>
+                <p>当前没有超过阈值的高风险地区</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

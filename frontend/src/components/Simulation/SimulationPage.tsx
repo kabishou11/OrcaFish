@@ -1,5 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import GraphPanel from './GraphPanel'
+import { useSimulationDraftStore } from '../../stores/simulationDraftStore'
+import WorkflowGuide, { type WorkflowGuideStep } from '../WorkflowGuide'
 
 
 interface SimulationRun {
@@ -67,6 +69,12 @@ function SimulationStreamPanel({ runId, runStatus: _runStatus }: { runId: string
     COMMENT: '#607d8b', FOLLOW: '#546e7a', UNFOLLOW: '#455a64',
   }
 
+  const ACTION_TYPE_ZH: Record<string, string> = {
+    CREATE_POST: '发帖', LIKE_POST: '点赞', REPOST: '转发',
+    COMMENT: '评论', FOLLOW: '关注', UNFOLLOW: '取关',
+    RETWEET: '转发', REPLY: '回复', SHARE: '分享', VIEW: '浏览',
+  }
+
   const formatTime = (ts: string) => {
     try { return new Date(ts).toLocaleTimeString('zh-CN', { hour12: false }) }
     catch (_) { return ts }
@@ -94,7 +102,7 @@ function SimulationStreamPanel({ runId, runStatus: _runStatus }: { runId: string
           padding: '6px 12px', borderBottom: '1px solid var(--border)',
           background: 'rgba(255,255,255,0.95)', flexShrink: 0,
         }}>
-          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
             代理体行动流
           </span>
           <span style={{ fontSize: '0.65rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
@@ -133,12 +141,12 @@ function SimulationStreamPanel({ runId, runStatus: _runStatus }: { runId: string
                     fontSize: '0.6rem', fontFamily: 'var(--font-mono)', fontWeight: 600,
                     padding: '1px 5px', borderRadius: 3,
                     background: 'var(--bg-overlay)', color: ACTION_COLORS[action.action_type] || '#78909c',
-                    letterSpacing: '0.04em', textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
                   }}>
-                    {action.action_type}
+                    {ACTION_TYPE_ZH[action.action_type] ?? action.action_type}
                   </span>
                   <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                    [{action.platform}]
+                    [{action.platform === 'twitter' ? '广场' : '社区'}]
                   </span>
                   {idx === actions.length - 1 && (
                     <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--accent)', flexShrink: 0 }} />
@@ -161,7 +169,7 @@ function SimulationStreamPanel({ runId, runStatus: _runStatus }: { runId: string
           background: 'var(--bg-base)', borderTop: '1px solid var(--border)',
           padding: '6px 12px', flexShrink: 0,
         }}>
-          <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 3 }}>
+          <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 3 }}>
             系统日志
           </div>
           <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
@@ -189,7 +197,7 @@ function PlatformStatusCard({ platform, status, runStatus }: {
   runStatus: SimRunStatus | null
 }) {
   const accentColor = platform === 'twitter' ? 'var(--accent)' : '#ff8c42'
-  const label = platform === 'twitter' ? 'Info Plaza' : 'Topic Community'
+  const label = platform === 'twitter' ? '信息广场' : '话题社区'
   const platformName = platform === 'twitter' ? 'X / Twitter' : 'Reddit'
   const iconPath = platform === 'twitter'
     ? 'M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z'
@@ -210,7 +218,7 @@ function PlatformStatusCard({ platform, status, runStatus }: {
           <svg viewBox="0 0 24 24" fill={accentColor} width="14" height="14" style={{ flexShrink: 0 }}>
             <path d={iconPath} />
           </svg>
-          <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', letterSpacing: '0.04em' }}>
             {label}
           </span>
         </div>
@@ -308,7 +316,7 @@ function ReportViewer({ runId, onClose }: { runId: string; onClose: () => void }
   useEffect(() => {
     setLoading(true)
     setError(null)
-    fetch(`/api/report/${runId}`)
+    fetch(`/api/simulation/report/${runId}`)
       .then(r => {
         if (!r.ok) throw new Error(`加载失败: ${r.status}`)
         return r.json()
@@ -434,6 +442,8 @@ function FileIcon() {
 interface CreateConfig { seed_content: string; simulation_requirement: string; max_rounds: number; name: string }
 
 export default function SimulationPage() {
+  const draft = useSimulationDraftStore((s) => s.draft)
+  const clearDraft = useSimulationDraftStore((s) => s.clearDraft)
   const [runs, setRuns] = useState<SimulationRun[]>([])
   const [loadingRuns, setLoadingRuns] = useState(true)
   const [creating, setCreating] = useState(false)
@@ -450,6 +460,17 @@ export default function SimulationPage() {
   const [runStatus, setRunStatus] = useState<SimRunStatus | null>(null)
   const [graphData, setGraphData] = useState<{ nodes: KGNode[]; edges: KGLink[] } | null>(null)
   const [graphLoading, setGraphLoading] = useState(false)
+
+  useEffect(() => {
+    if (!draft) return
+    setConfig((prev) => ({
+      ...prev,
+      name: draft.name || prev.name,
+      seed_content: draft.seed_content || prev.seed_content,
+      simulation_requirement: draft.simulation_requirement || prev.simulation_requirement,
+      max_rounds: draft.max_rounds || prev.max_rounds,
+    }))
+  }, [draft])
 
   // Fetch graph data when selected run changes
   useEffect(() => {
@@ -556,6 +577,7 @@ export default function SimulationPage() {
       if (!res.ok) throw new Error('创建失败')
       const run: SimulationRun = await res.json()
       setRuns(prev => [run, ...prev]); setSelectedRun(run)
+      clearDraft()
     } catch (err) { console.error(err) }
     finally { setCreating(false) }
   }
@@ -613,20 +635,95 @@ export default function SimulationPage() {
   const progress = selectedRun?.status === 'running' && selectedRun?.rounds_completed
     ? Math.min((selectedRun.rounds_completed / config.max_rounds) * 100, 100)
     : selectedRun?.status === 'completed' ? 100 : 0
+  const workflowSteps: WorkflowGuideStep[] = [
+    {
+      label: 'STEP 1',
+      title: '先创建推演记录',
+      description: '把图谱种子、推演目标和轮次先固化成一条可操作记录。',
+      status: runs.length > 0 ? 'done' : 'active' as const,
+    },
+    {
+      label: 'STEP 2',
+      title: '再启动模拟环境',
+      description: '选中一条记录后手动启动，避免刚创建就直接冲进运行态。',
+      status: selectedRun?.status === 'running' ? 'active' : selectedRun?.status === 'completed' ? 'done' : 'pending' as const,
+    },
+    {
+      label: 'STEP 3',
+      title: '最后看图谱与报告',
+      description: '行动流、知识图谱和报告会在仿真推进后逐步成形。',
+      status: selectedRun?.status === 'completed' ? 'active' : 'pending' as const,
+    },
+  ]
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-6)' }}>
 
-      {/* ── Page Header ─────────────────────────────────────────── */}
-      <div className="page-header">
-        <div>
-          <div className="page-title">未来推演</div>
-          <div className="page-subtitle">万物皆可推演 · OASIS 代理网络 · 知识图谱 · 情景预测</div>
+      {/* ── MiroFish-style Header ───────────────────────────────── */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 'var(--sp-4)',
+        padding: 'var(--sp-5) var(--sp-6)',
+        background: 'linear-gradient(135deg, rgba(15,23,42,0.02), rgba(37,99,235,0.06))',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius)',
+      }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+            MiroFish 风格未来推演台
+          </div>
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: 4 }}>
+            图谱构建 → 环境搭建 → 开始模拟 → 生成报告
+          </div>
+          {draft && (
+            <div style={{ marginTop: 10, fontSize: '0.74rem', color: 'var(--accent)', fontWeight: 600 }}>
+              已接收来自议题研判的推演输入，创建后即可进入仿真闭环
+            </div>
+          )}
         </div>
-        <div className="flex gap-3">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexShrink: 0 }}>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--sp-2)',
+            padding: '8px 12px',
+            background: 'rgba(255,255,255,0.8)',
+            border: '1px solid var(--border)',
+            borderRadius: 999,
+          }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: selectedRun?.status === 'running' ? 'var(--accent)' : 'var(--text-muted)' }} />
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+              {selectedRun?.status === 'running' ? 'SIMULATION LIVE' : 'WORKBENCH READY'}
+            </span>
+          </div>
           <span className="badge badge-active"><span className="badge-dot" />{runs.length} 条记录</span>
         </div>
       </div>
+
+      <WorkflowGuide
+        eyebrow="SIMULATION PLAYBOOK"
+        title="先建记录，再启动，再读结果"
+        description="这一页已经按 MiroFish 的工作台节奏收口。先把输入固化，再启动推演，最后查看图谱、行动流和报告，会比直接一把梭更稳。"
+        steps={workflowSteps}
+        actions={
+          <>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
+              查看创建区
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={!selectedRun || selectedRun.status === 'running' || selectedRun.status === 'completed' || startingRun}
+              onClick={() => selectedRun && handleStart(selectedRun.run_id)}
+              style={{ opacity: (!selectedRun || selectedRun.status === 'running' || selectedRun.status === 'completed') ? 0.45 : 1 }}
+            >
+              立即启动当前记录
+            </button>
+          </>
+        }
+      />
 
       {/* ── Control Bar ─────────────────────────────────────────── */}
       <div className="panel" style={{ padding: 'var(--sp-4) var(--sp-5)' }}>
@@ -689,6 +786,102 @@ export default function SimulationPage() {
             </button>
           </div>
         </div>
+        {draft && !selectedRun && (
+          <div style={{
+            marginTop: 'var(--sp-4)',
+            paddingTop: 'var(--sp-4)',
+            borderTop: '1px solid var(--border)',
+            display: 'grid',
+            gridTemplateColumns: '1.2fr 1fr 120px',
+            gap: 'var(--sp-3)',
+            alignItems: 'center',
+          }}>
+            <div>
+              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: 4, letterSpacing: '0.06em' }}>来自研判的议题</div>
+              <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{draft.name}</div>
+              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.5 }}>
+                {draft.simulation_requirement}
+              </div>
+            </div>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+              <div>种子长度: {draft.seed_content.length}</div>
+              <div>最大轮次: {draft.max_rounds}</div>
+              <div>来源: {draft.source === 'analysis' ? '议题研判' : '手动'}</div>
+            </div>
+            <button className="btn btn-secondary btn-sm" onClick={clearDraft} style={{ justifyContent: 'center' }}>
+              清空草稿
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* ── Workflow Steps ─────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
+        {[
+          {
+            key: 'step-1',
+            title: 'Step 1 图谱种子',
+            desc: draft ? '已接收议题研判摘要，可直接构图' : '填写议题、背景与推演目标',
+            active: !selectedRun,
+            done: Boolean(selectedRun || draft),
+            accent: 'var(--accent)',
+          },
+          {
+            key: 'step-2',
+            title: 'Step 2 创建推演',
+            desc: selectedRun ? `已创建 ${selectedRun.run_id}` : '生成运行记录与配置文件',
+            active: Boolean(selectedRun && selectedRun.status === 'created'),
+            done: Boolean(selectedRun),
+            accent: '#0ea5e9',
+          },
+          {
+            key: 'step-3',
+            title: 'Step 3 开始模拟',
+            desc: selectedRun?.status === 'running' ? '双平台仿真进行中' : '启动代理体并观察行动流',
+            active: selectedRun?.status === 'running',
+            done: selectedRun?.status === 'completed',
+            accent: 'var(--medium)',
+          },
+          {
+            key: 'step-4',
+            title: 'Step 4 生成报告',
+            desc: selectedRun?.status === 'completed' ? '可查看仿真报告与收敛结果' : '完成后生成预测报告',
+            active: selectedRun?.status === 'completed',
+            done: false,
+            accent: 'var(--low)',
+          },
+        ].map((step, index) => (
+          <div
+            key={step.key}
+            style={{
+              position: 'relative',
+              padding: 'var(--sp-4)',
+              borderRadius: 'var(--radius)',
+              border: `1px solid ${step.active ? `${step.accent}55` : 'var(--border)'}`,
+              background: step.active ? `linear-gradient(135deg, ${step.accent}14, rgba(255,255,255,0.92))` : 'rgba(255,255,255,0.86)',
+              boxShadow: step.active ? `0 10px 22px ${step.accent}18` : 'var(--shadow-sm)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 'var(--sp-3)' }}>
+              <div>
+                <div style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: step.accent, marginBottom: 5 }}>
+                  0{index + 1}
+                </div>
+                <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>{step.title}</div>
+                <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>{step.desc}</div>
+              </div>
+              <div style={{
+                width: 10,
+                height: 10,
+                borderRadius: '50%',
+                marginTop: 4,
+                background: step.active ? step.accent : step.done ? 'var(--low)' : 'var(--border-bright)',
+                boxShadow: step.active ? `0 0 10px ${step.accent}` : 'none',
+                flexShrink: 0,
+              }} />
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* ── Main Layout: 280px left (controls) | 1fr center (graph) | 300px right (status) ── */}
@@ -740,15 +933,39 @@ export default function SimulationPage() {
 
           {/* Create Form */}
           <div className="panel">
-            <div className="panel-header"><span className="panel-title">创建推演</span><FishIcon /></div>
+            <div className="panel-header"><span className="panel-title">Step 1 / 创建推演</span><FishIcon /></div>
             <div className="panel-body">
               <form onSubmit={handleCreate} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
+                <div style={{
+                  padding: 'var(--sp-3)',
+                  background: 'linear-gradient(135deg, rgba(37,99,235,0.05), rgba(14,165,233,0.02))',
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-sm)',
+                }}>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', marginBottom: 4 }}>
+                    GRAPH SEED
+                  </div>
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                    这里输入事件背景、关键参与方、已有研判或报道正文。创建后会先生成推演记录，再由你决定何时启动模拟。
+                  </div>
+                </div>
                 <div>
+                  <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>议题种子</label>
                   <textarea
                     value={config.seed_content}
                     onChange={e => setConfig(p => ({ ...p, seed_content: e.target.value }))}
-                    placeholder="输入推演议题..."
+                    placeholder="输入推演议题、报道摘要或来自研判页的综合结论..."
                     rows={4}
+                    style={{ ...inputStyle() as React.CSSProperties, resize: 'vertical' as const }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>推演目标</label>
+                  <textarea
+                    value={config.simulation_requirement}
+                    onChange={e => setConfig(p => ({ ...p, simulation_requirement: e.target.value }))}
+                    placeholder="例如：推演未来72小时内，关键参与方在舆情与行动层面的演化路径。"
+                    rows={3}
                     style={{ ...inputStyle() as React.CSSProperties, resize: 'vertical' as const }}
                   />
                 </div>
@@ -768,7 +985,7 @@ export default function SimulationPage() {
                 </div>
                 <button type="submit" className="btn btn-primary" disabled={creating}
                   style={{ width: '100%', justifyContent: 'center' }}>
-                  {creating ? <><div className="spinner-sm" /> 创建中...</> : <><PlayIcon /> 启动推演</>}
+                  {creating ? <><div className="spinner-sm" /> 创建中...</> : <><PlayIcon /> 创建推演记录</>}
                 </button>
               </form>
             </div>
@@ -777,11 +994,14 @@ export default function SimulationPage() {
           {/* Selected Run Controls */}
           {selectedRun && (
             <div className="panel">
+              <div className="panel-header">
+                <span className="panel-title">Step 2 / Step 3 控制台</span>
+                {statusBadge(selectedRun.status)}
+              </div>
               <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
                 <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', textAlign: 'center' }}>
                   {selectedRun.run_id}
                 </div>
-                {statusBadge(selectedRun.status)}
                 <button className="btn btn-primary btn-sm"
                   onClick={() => handleStart(selectedRun.run_id)}
                   disabled={!selectedRun || selectedRun.status === 'running' || selectedRun.status === 'completed' || startingRun}
@@ -823,7 +1043,7 @@ export default function SimulationPage() {
           <div>
             {/* Section header */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.1em', fontFamily: 'var(--font-mono)' }}>
+              <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.06em', fontFamily: 'var(--font-mono)' }}>
                 关系图谱
               </span>
               <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
@@ -880,7 +1100,7 @@ export default function SimulationPage() {
           {/* Platform Status */}
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.1em', fontFamily: 'var(--font-mono)' }}>
+              <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.06em', fontFamily: 'var(--font-mono)' }}>
                 平台态势
               </span>
               <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
@@ -925,7 +1145,7 @@ export default function SimulationPage() {
                     ['耗时', selectedRun.duration_ms ? `${(selectedRun.duration_ms / 1000).toFixed(1)}s` : '—'],
                   ].map(([label, value]) => (
                     <div key={label as string}>
-                      <div style={{ color: 'var(--text-muted)', marginBottom: 2, fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
+                      <div style={{ color: 'var(--text-muted)', marginBottom: 2, fontSize: '0.62rem', letterSpacing: '0.04em' }}>{label}</div>
                       <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{value}</div>
                     </div>
                   ))}
@@ -933,7 +1153,7 @@ export default function SimulationPage() {
                 {/* Agent table */}
                 {selectedRun.final_states && selectedRun.final_states.length > 0 && (
                   <div>
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 6, letterSpacing: '0.04em' }}>
                       代理体 ({selectedRun.final_states.length})
                     </div>
                     <div style={{ maxHeight: 200, overflowY: 'auto', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
