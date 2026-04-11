@@ -68,9 +68,10 @@ class Settings(BaseSettings):
     report_llm_timeout: Optional[int] = None
     report_llm_reasoning_split: Optional[bool] = None
 
-    # ── Knowledge Graph — Zep CE (本地 Docker) ──────────
+    # ── Knowledge Graph — Zep CE / Graphiti (本地 Docker) ──────────
     zep_api_key: str = ""
     zep_base_url: str = "http://localhost:8000"
+    graphiti_base_url: str = "http://localhost:8003"
     zep_api_secret: str = ""
 
     # ── Crawl4AI 本地服务 ────────────────────────────────

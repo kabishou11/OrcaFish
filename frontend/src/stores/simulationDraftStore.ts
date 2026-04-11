@@ -7,6 +7,19 @@ export interface SimulationDraft {
   max_rounds: number
   source?: 'analysis' | 'manual'
   source_task_id?: string
+  country_context?: {
+    iso: string
+    country_name: string
+    score: number
+    level: string
+    news_count: number
+    signal_count: number
+    focal_count: number
+    latest_activity?: string | null
+    top_signal_types?: string[]
+    narrative?: string
+    top_headlines?: string[]
+  }
 }
 
 interface SimulationDraftState {

@@ -18,15 +18,19 @@ interface Signal {
   lon?: number
   intensity?: number
   timestamp?: string
+  description?: string
+  source?: string
 }
 
-interface GlobeContainerProps {
+interface globeContainerProps {
   ciiScores: CIIScore[]
   signals: Signal[]
   onCountryClick?: (iso: string) => void
+  domain?: string
+  onDomainChange?: (domain: string) => void
 }
 
-export function GlobeContainer({ ciiScores, signals, onCountryClick }: GlobeContainerProps) {
+export function GlobeContainer({ ciiScores, signals, onCountryClick, domain, onDomainChange }: globeContainerProps) {
   const [layers, setLayers] = useState({ cii: true, signals: true, convergence: false })
   const [autoRotate, setAutoRotate] = useState(true)
 
@@ -41,12 +45,15 @@ export function GlobeContainer({ ciiScores, signals, onCountryClick }: GlobeCont
         signals={signals}
         onCountryClick={onCountryClick}
         autoRotate={autoRotate}
+        layers={layers}
       />
       <GlobeControls
         layers={layers}
         onLayerToggle={handleLayerToggle}
         autoRotate={autoRotate}
         onAutoRotateToggle={() => setAutoRotate(!autoRotate)}
+        domain={domain}
+        onDomainChange={onDomainChange}
       />
     </div>
   )

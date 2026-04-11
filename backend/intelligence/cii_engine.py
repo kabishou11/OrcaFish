@@ -29,6 +29,26 @@ CURATED_COUNTRIES: dict[str, dict] = {
     "AF": {"name": "阿富汗", "baseline_risk": 70.0, "event_multiplier": 1.2},
     "VE": {"name": "委内瑞拉", "baseline_risk": 60.0, "event_multiplier": 1.1},
     "BY": {"name": "白俄罗斯", "baseline_risk": 50.0, "event_multiplier": 1.0},
+    "SY": {"name": "叙利亚", "baseline_risk": 68.0, "event_multiplier": 1.15},
+    "JO": {"name": "约旦", "baseline_risk": 34.0, "event_multiplier": 1.0},
+    "LB": {"name": "黎巴嫩", "baseline_risk": 57.0, "event_multiplier": 1.1},
+    "YE": {"name": "也门", "baseline_risk": 73.0, "event_multiplier": 1.2},
+    "EG": {"name": "埃及", "baseline_risk": 37.0, "event_multiplier": 1.0},
+    "SD": {"name": "苏丹", "baseline_risk": 76.0, "event_multiplier": 1.2},
+    "ET": {"name": "埃塞俄比亚", "baseline_risk": 49.0, "event_multiplier": 1.05},
+    "LY": {"name": "利比亚", "baseline_risk": 63.0, "event_multiplier": 1.15},
+    "MD": {"name": "摩尔多瓦", "baseline_risk": 39.0, "event_multiplier": 1.0},
+    "RS": {"name": "塞尔维亚", "baseline_risk": 31.0, "event_multiplier": 0.98},
+    "PS": {"name": "巴勒斯坦", "baseline_risk": 74.0, "event_multiplier": 1.2},
+    "QA": {"name": "卡塔尔", "baseline_risk": 24.0, "event_multiplier": 0.95},
+    "AE": {"name": "阿联酋", "baseline_risk": 22.0, "event_multiplier": 0.95},
+    "TH": {"name": "泰国", "baseline_risk": 28.0, "event_multiplier": 0.98},
+    "PH": {"name": "菲律宾", "baseline_risk": 41.0, "event_multiplier": 1.02},
+    "VN": {"name": "越南", "baseline_risk": 29.0, "event_multiplier": 0.98},
+    "MY": {"name": "马来西亚", "baseline_risk": 26.0, "event_multiplier": 0.98},
+    "NG": {"name": "尼日利亚", "baseline_risk": 47.0, "event_multiplier": 1.05},
+    "ML": {"name": "马里", "baseline_risk": 64.0, "event_multiplier": 1.15},
+    "NE": {"name": "尼日尔", "baseline_risk": 59.0, "event_multiplier": 1.1},
 }
 
 
@@ -52,6 +72,9 @@ class CountryData:
     internet_outages: int = 0
     news_velocity: float = 0.0
     news_count: int = 0
+    news_freshness: float = 0.0
+    source_diversity: int = 0
+    escalation_score: float = 0.0
     displacement_outflow: int = 0
     displacement_inflow: int = 0
     displacement_score: float = 0.0
@@ -144,6 +167,9 @@ class CIIEngine:
             if iso in self._data:
                 self._data[iso].news_count += c.get("source_count", 0)
                 self._data[iso].news_velocity += c.get("velocity", 0.0)
+                self._data[iso].news_freshness = max(self._data[iso].news_freshness, float(c.get("freshness", 0.0)))
+                self._data[iso].source_diversity = max(self._data[iso].source_diversity, int(c.get("source_diversity", 0)))
+                self._data[iso].escalation_score = max(self._data[iso].escalation_score, float(c.get("escalation", 0.0)))
 
     def ingest_displacement(self, data: list[dict]):
         """Ingest UNHCR displacement data"""
@@ -243,7 +269,10 @@ class CIIEngine:
         """Information (25%): news velocity and volume"""
         velocity_score = min(100.0, d.news_velocity * 20.0)
         volume_score = min(50.0, d.news_count / 2.0)
-        return velocity_score + volume_score
+        freshness_score = min(30.0, d.news_freshness * 30.0)
+        diversity_score = min(20.0, d.source_diversity * 4.0)
+        escalation_score = min(25.0, d.escalation_score * 20.0)
+        return velocity_score + volume_score + freshness_score + diversity_score + escalation_score
 
     def _compute_boosts(self, d: CountryData) -> float:
         """Additional boost factors"""

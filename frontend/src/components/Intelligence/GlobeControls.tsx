@@ -1,4 +1,4 @@
-interface GlobeControlsProps {
+interface globeControlsProps {
   layers: { cii: boolean; signals: boolean; convergence: boolean }
   onLayerToggle: (layer: 'cii' | 'signals' | 'convergence') => void
   autoRotate: boolean
@@ -23,71 +23,57 @@ export function GlobeControls({
   onLayerToggle,
   autoRotate,
   onAutoRotateToggle,
-  timeRange,
-  onTimeChange,
   domain = 'all',
   onDomainChange,
-}: GlobeControlsProps) {
+}: globeControlsProps) {
   return (
     <div style={{
       position: 'absolute',
       top: '16px',
       right: '16px',
-      background: 'rgba(7,9,15,0.9)',
-      border: '1px solid rgba(40,100,160,0.3)',
-      borderRadius: '8px',
+      background: 'rgba(255,255,255,0.92)',
+      border: '1px solid var(--border-bright)',
+      borderRadius: 'var(--radius)',
       padding: '12px',
-      minWidth: '180px',
-      fontFamily: 'monospace',
-      fontSize: '12px',
-      color: '#dce8f5',
+      minWidth: '160px',
+      fontFamily: 'var(--font-mono)',
+      fontSize: '0.72rem',
+      color: 'var(--text-primary)',
+      backdropFilter: 'blur(8px)',
+      boxShadow: 'var(--shadow)',
     }}>
-      <div style={{ marginBottom: '12px', fontWeight: 'bold', color: '#5eb8ff' }}>Globe Layers</div>
+      <div style={{ marginBottom: 10, fontWeight: 700, color: 'var(--accent)', fontSize: '0.7rem', letterSpacing: '0.04em' }}>图层控制</div>
 
-      <label style={{ display: 'flex', alignItems: 'center', marginBottom: '8px', cursor: 'pointer' }}>
-        <input
-          type="checkbox"
-          checked={layers.cii}
-          onChange={() => onLayerToggle('cii')}
-          style={{ marginRight: '8px' }}
-        />
-        CII Heatmap
-      </label>
+      {[
+        { key: 'cii' as const, label: 'CII 热力图' },
+        { key: 'signals' as const, label: '信号标记' },
+        { key: 'convergence' as const, label: '汇聚区域' },
+      ].map(({ key, label }) => (
+        <label key={key} style={{ display: 'flex', alignItems: 'center', marginBottom: 7, cursor: 'pointer', gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={layers[key]}
+            onChange={() => onLayerToggle(key)}
+            style={{ accentColor: 'var(--accent)' }}
+          />
+          {label}
+        </label>
+      ))}
 
-      <label style={{ display: 'flex', alignItems: 'center', marginBottom: '8px', cursor: 'pointer' }}>
-        <input
-          type="checkbox"
-          checked={layers.signals}
-          onChange={() => onLayerToggle('signals')}
-          style={{ marginRight: '8px' }}
-        />
-        Signals
-      </label>
-
-      <label style={{ display: 'flex', alignItems: 'center', marginBottom: '12px', cursor: 'pointer' }}>
-        <input
-          type="checkbox"
-          checked={layers.convergence}
-          onChange={() => onLayerToggle('convergence')}
-          style={{ marginRight: '8px' }}
-        />
-        Convergence
-      </label>
-
-      <div style={{ borderTop: '1px solid rgba(40,100,160,0.3)', paddingTop: '12px', marginBottom: '12px' }}>
-        <div style={{ marginBottom: '6px', color: '#5eb8ff', fontSize: '0.7rem' }}>Domain Filter</div>
+      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10, marginTop: 4 }}>
+        <div style={{ marginBottom: 6, color: 'var(--text-muted)', fontSize: '0.65rem' }}>领域筛选</div>
         <select
           value={domain}
           onChange={e => onDomainChange?.(e.target.value)}
           style={{
             width: '100%',
-            background: 'rgba(7,9,15,0.9)',
-            border: '1px solid rgba(40,100,160,0.3)',
-            color: '#dce8f5',
-            borderRadius: '4px',
-            padding: '4px',
-            fontSize: '11px',
-            fontFamily: 'monospace',
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border)',
+            color: 'var(--text-primary)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '4px 6px',
+            fontSize: '0.7rem',
+            fontFamily: 'var(--font-mono)',
             cursor: 'pointer',
           }}
         >
@@ -97,31 +83,17 @@ export function GlobeControls({
         </select>
       </div>
 
-      <div style={{ borderTop: '1px solid rgba(40,100,160,0.3)', paddingTop: '12px' }}>
-        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10, marginTop: 8 }}>
+        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: 6 }}>
           <input
             type="checkbox"
             checked={autoRotate}
             onChange={onAutoRotateToggle}
-            style={{ marginRight: '8px' }}
+            style={{ accentColor: 'var(--accent)' }}
           />
-          Auto Rotate
+          自动旋转
         </label>
       </div>
-
-      {timeRange && onTimeChange && (
-        <div style={{ borderTop: '1px solid rgba(40,100,160,0.3)', paddingTop: '12px', marginTop: '12px' }}>
-          <div style={{ marginBottom: '8px', color: '#5eb8ff' }}>Timeline</div>
-          <input
-            type="range"
-            min={timeRange[0]}
-            max={timeRange[1]}
-            defaultValue={timeRange[1]}
-            onChange={(e) => onTimeChange(Number(e.target.value))}
-            style={{ width: '100%' }}
-          />
-        </div>
-      )}
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Globe from 'globe.gl'
 import type { GlobeInstance } from 'globe.gl'
+import { useIntelligenceStore } from '../../stores/intelligenceStore'
 
 interface CIIScore {
   iso: string
@@ -16,6 +17,8 @@ interface Signal {
   lat?: number
   lon?: number
   intensity?: number
+  timestamp?: string
+  description?: string
 }
 
 interface GlobeVisualizationProps {
@@ -23,6 +26,11 @@ interface GlobeVisualizationProps {
   signals: Signal[]
   onCountryClick?: (iso: string) => void
   autoRotate?: boolean
+  layers?: {
+    cii: boolean
+    signals: boolean
+    convergence: boolean
+  }
 }
 
 const CII_COLORS: Record<string, string> = {
@@ -46,10 +54,20 @@ const SIGNAL_COLORS: Record<string, string> = {
   default: '#5eb8ff',
 }
 
-export function GlobeVisualization({ ciiScores, signals, onCountryClick, autoRotate = true }: GlobeVisualizationProps) {
+export function GlobeVisualization({
+  ciiScores,
+  signals,
+  onCountryClick,
+  autoRotate = true,
+  layers = { cii: true, signals: true, convergence: false },
+}: GlobeVisualizationProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const globeRef = useRef<GlobeInstance | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const injectedSignals = useIntelligenceStore(s => s.injectedSignals)
+
+  // Merge live signals with injected analysis signals
+  const allSignals = [...signals, ...injectedSignals]
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -71,49 +89,64 @@ export function GlobeVisualization({ ciiScores, signals, onCountryClick, autoRot
           .width(containerRef.current.clientWidth)
           .height(containerRef.current.clientHeight)
 
-        globe
+        ;(globe as any)
           .polygonsData(countriesData.features)
-          .polygonsSideColor(() => 'rgba(0,0,0,0)')
-          .polygonStrokeColor(() => 'rgba(40,100,160,0.3)')
+          .polygonSideColor(() => 'rgba(0,0,0,0)')
+          .polygonStrokeColor(() => 'rgba(40,100,160,0.35)')
           .polygonCapColor((feat: any) => {
             const code = feat.properties?.ISO_A2
             if (!code || code === '-99') return 'rgba(0,0,0,0)'
+            if (!layers.cii) return 'rgba(15,30,50,0.05)'
             const score = ciiScores.find(c => c.iso === code)
-            if (!score) return 'rgba(15,30,50,0.4)'
-            return CII_COLORS[score.level] + '88'
+            if (!score) return 'rgba(15,30,50,0.25)'
+            return CII_COLORS[score.level] + '99'
           })
           .polygonLabel((feat: any) => {
             const code = feat.properties?.ISO_A2
             if (!code) return ''
             const score = ciiScores.find(c => c.iso === code)
             if (!score) return ''
-            return `<div style="background:#f0f4f8;border:1px solid ${CII_COLORS[score.level]};border-radius:6px;padding:6px 10px;font-family:monospace;font-size:12px;color:#1a2332">
+            const levelZh: Record<string, string> = { low: '低', normal: '正常', elevated: '偏高', high: '高', critical: '紧急' }
+            return `<div style="background:rgba(240,244,248,0.97);border:1px solid ${CII_COLORS[score.level]};border-radius:6px;padding:6px 10px;font-family:'IBM Plex Sans',sans-serif;font-size:12px;color:#1a2332">
               <b style="color:${CII_COLORS[score.level]}">${code}</b><br/>
-              CII <b>${score.score.toFixed(1)}</b><br/>
-              <span style="color:${CII_COLORS[score.level]};font-size:10px">${score.level.toUpperCase()}</span>
+              CII <b>${score.score.toFixed(1)}</b> / 100<br/>
+              <span style="color:${CII_COLORS[score.level]};font-size:10px">${levelZh[score.level] ?? score.level}</span>
             </div>`
           })
-          ;(globe as any).onPolygonClick((feat: any) => {
+        ;(globe as any)
+          .onPolygonClick((feat: any) => {
             const code = feat.properties?.ISO_A2
             if (code && onCountryClick) onCountryClick(code)
           })
 
-        const signalMarkers = signals
+        const signalMarkers = allSignals
           .filter(s => s.lat != null && s.lon != null)
           .map(s => ({ ...s, _lat: s.lat!, _lng: s.lon! }))
 
-        if (signalMarkers.length > 0) {
+        if (layers.signals && signalMarkers.length > 0) {
           globe
             .htmlElementsData(signalMarkers)
             .htmlLat((d: any) => d._lat)
             .htmlLng((d: any) => d._lng)
-            .htmlAltitude(() => 0.015)
+            .htmlAltitude(() => 0.018)
             .htmlElement((d: any) => {
               const el = document.createElement('div')
               const color = SIGNAL_COLORS[d.type] || SIGNAL_COLORS.default
-              el.innerHTML = `<div style="width:10px;height:10px;border-radius:50%;background:${color};box-shadow:0 0 8px ${color};animation:pulse-signal 1.5s ease-in-out infinite"></div>`
+              const isInjected = d.source === 'analysis'
+              el.innerHTML = `<div style="
+                width:${isInjected ? 14 : 10}px;
+                height:${isInjected ? 14 : 10}px;
+                border-radius:50%;
+                background:${color};
+                border:${isInjected ? '2px solid #fff' : 'none'};
+                box-shadow:0 0 ${isInjected ? 12 : 8}px ${color};
+                animation:pulse-signal 1.5s ease-in-out infinite;
+                cursor:pointer;
+              "></div>`
               return el
             })
+        } else {
+          globe.htmlElementsData([])
         }
 
         const ctrl = globe.controls()
@@ -133,7 +166,7 @@ export function GlobeVisualization({ ciiScores, signals, onCountryClick, autoRot
           document.head.appendChild(style)
         }
       } catch (err) {
-        if (!destroyed) setError(err instanceof Error ? err.message : 'Globe load failed')
+        if (!destroyed) setError(err instanceof Error ? err.message : '加载地球失败')
       }
     }
 
@@ -145,9 +178,23 @@ export function GlobeVisualization({ ciiScores, signals, onCountryClick, autoRot
         globeRef.current = null
       }
     }
-  }, [ciiScores, signals, autoRotate, onCountryClick])
+  }, [ciiScores, autoRotate, onCountryClick, layers.cii, layers.signals])
 
-  if (error) return <div style={{ color: '#ff3b5c', padding: '20px' }}>Error: {error}</div>
+  // Update signals dynamically without full re-init
+  useEffect(() => {
+    const g = globeRef.current
+    if (!g) return
+    const markers = allSignals.filter(s => s.lat != null && s.lon != null).map(s => ({ ...s, _lat: s.lat!, _lng: s.lon! }))
+    try {
+      g.htmlElementsData(layers.signals && markers.length > 0 ? markers : [])
+    } catch {}
+  }, [allSignals.length, injectedSignals.length, layers.signals])
+
+  if (error) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--critical)', fontSize: '0.85rem' }}>
+      {error}
+    </div>
+  )
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 }

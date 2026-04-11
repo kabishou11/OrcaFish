@@ -2,7 +2,7 @@
 import os
 import json
 import asyncio
-from typing import Optional, Generator, Any, Dict
+from typing import Optional, Generator, Any, Dict, List
 from openai import AsyncOpenAI, RateLimitError
 from loguru import logger
 
@@ -52,7 +52,7 @@ class LLMClient:
         },
     }
 
-    PROVIDER_ENV_KEYS: Dict[str, list[str]] = {
+    PROVIDER_ENV_KEYS: Dict[str, List[str]] = {
         "modelscope": ["MODELSCOPE_API_KEY"],
         "minimax": ["MINIMAX_API_KEY"],
         "openai": ["OPENAI_API_KEY"],

@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 """OrcaFish Simulation Models"""
 from pydantic import BaseModel, Field
-from datetime import datetime
-from typing import Optional
+from datetime import UTC, datetime
+from typing import Dict, List, Optional
 
 
 class Project(BaseModel):
@@ -12,7 +14,7 @@ class Project(BaseModel):
     simulation_requirement: str = ""
     ontology: dict = Field(default_factory=dict)
     graph_id: str = ""
-    created_at: datetime = datetime.utcnow()
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class Simulation(BaseModel):
@@ -25,7 +27,7 @@ class Simulation(BaseModel):
     entities_count: int = 0
     profiles_count: int = 0
     platform: str = "both"
-    created_at: datetime = datetime.utcnow()
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class AgentAction(BaseModel):
@@ -46,7 +48,7 @@ class PredictionReport(BaseModel):
     status: str = "pending"
     markdown_content: str = ""
     outline: dict = Field(default_factory=dict)
-    created_at: datetime = datetime.utcnow()
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     completed_at: Optional[datetime] = None
 
 
@@ -105,7 +107,7 @@ class RoundSummary(BaseModel):
     total_actions: int = 0
     dominant_action_type: str = ""
     avg_sentiment: float = 0.0
-    key_events: list[str] = Field(default_factory=list)
+    key_events: List[str] = Field(default_factory=list)
 
 
 class SimulationRunState(BaseModel):
@@ -133,26 +135,45 @@ class InterviewRequest(BaseModel):
 
 
 class BatchInterviewRequest(BaseModel):
-    agent_ids: list[str] = Field(default_factory=list)
+    agent_ids: List[str] = Field(default_factory=list)
     platform: str = "both"
     question: str = ""
 
 
 class GraphNode(BaseModel):
     id: str
+    uuid: str = ""
     name: str
     type: str  # Agent | Entity | Event | Location | Concept
+    labels: List[str] = Field(default_factory=list)
+    summary: str = ""
+    attributes: dict = Field(default_factory=dict)
     properties: dict = Field(default_factory=dict)
+    created_at: Optional[str] = None
 
 
 class GraphEdge(BaseModel):
     source: str
     target: str
+    uuid: str = ""
     type: str  # follows | mentions | retweets | believes | influences
+    fact_type: str = ""
     weight: float = 1.0
     label: str = ""
+    name: str = ""
+    fact: str = ""
+    source_node_uuid: str = ""
+    target_node_uuid: str = ""
+    source_node_name: str = ""
+    target_node_name: str = ""
+    attributes: dict = Field(default_factory=dict)
+    created_at: Optional[str] = None
+    valid_at: Optional[str] = None
+    invalid_at: Optional[str] = None
+    expired_at: Optional[str] = None
+    episodes: List[str] = Field(default_factory=list)
 
 
 class KGData(BaseModel):
-    nodes: list[GraphNode] = Field(default_factory=list)
-    edges: list[GraphEdge] = Field(default_factory=list)
+    nodes: List[GraphNode] = Field(default_factory=list)
+    edges: List[GraphEdge] = Field(default_factory=list)

@@ -1,5 +1,8 @@
-import { useEffect, useState } from 'react'
-import { NavLink } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { NavLink, useNavigate } from 'react-router-dom'
+import { useSimulationDraftStore } from '../../stores/simulationDraftStore'
+import { useIntelligenceStore, type ObservationCountryContext } from '../../stores/intelligenceStore'
+import CountryWorkbenchCard from '../CountryWorkbenchCard'
 
 interface CIIOverview {
   cii: number
@@ -24,13 +27,54 @@ interface WMStatus {
   last_poll: string | null
   poll_interval: number
   cii_threshold: number
+  data_sources?: string[]
 }
 
 interface SimRun { run_id: string; status: string; rounds_completed: number; created_at: string }
 interface Pipeline { pipeline_id: string; stage: string; country_name: string; cii_score: number; created_at: string }
+interface NewsItem { id: string; title: string; summary?: string; country_iso?: string; signal_type?: string; published_at?: string; source?: string }
+interface FocalPoint { entity_id: string; focal_score: number; urgency: string; narrative: string; top_headlines: string[] }
+interface CountryContextPayload {
+  iso: string
+  country: { name: string; score: number; level: string }
+  summary: {
+    news_count: number
+    signal_count: number
+    focal_count: number
+    latest_activity?: string | null
+    top_signal_types: string[]
+    narrative: string
+    top_headlines: string[]
+  }
+}
+interface WorkbenchCountry {
+  iso: string
+  name: string
+  newsCount: number
+  focalCount: number
+  riskScore: number
+  lastPublished?: string
+  latestHeadline: string
+  latestSummary: string
+  urgency: string
+}
 
 const STAGE_LABELS: Record<string, string> = {
   detected: '已检测', analysis: '研判中', simulation: '推演中', completed: '已完成', failed: '失败',
+}
+
+const COUNTRY_NAME_MAP: Record<string, string> = {
+  UA: '乌克兰', RU: '俄罗斯', CN: '中国', IR: '伊朗', IL: '以色列', TW: '台湾', KP: '朝鲜', SA: '沙特', TR: '土耳其',
+  PK: '巴基斯坦', IN: '印度', US: '美国', GB: '英国', FR: '法国', DE: '德国', MM: '缅甸', IQ: '伊拉克', AF: '阿富汗',
+  VE: '委内瑞拉', BY: '白俄罗斯', SY: '叙利亚', JO: '约旦', LB: '黎巴嫩', YE: '也门', EG: '埃及', SD: '苏丹',
+  ET: '埃塞俄比亚', LY: '利比亚', MD: '摩尔多瓦', RS: '塞尔维亚', PS: '巴勒斯坦', QA: '卡塔尔', AE: '阿联酋',
+  TH: '泰国', PH: '菲律宾', VN: '越南', MY: '马来西亚', NG: '尼日利亚', ML: '马里', NE: '尼日尔',
+}
+
+function isRecent(ts?: string, windowMs = 5 * 60 * 1000): boolean {
+  if (!ts) return false
+  const diff = Date.now() - new Date(ts).getTime()
+  return diff >= 0 && diff <= windowMs
 }
 
 /* ── ScoreRing (enlarged) ───────────────────────────────────────────── */
@@ -162,21 +206,29 @@ function MiniProgress({ value, max, label, color }: { value: number; max: number
 
 /* ── Dashboard ──────────────────────────────────────────────────────── */
 export default function Dashboard() {
+  const navigate = useNavigate()
+  const setDraft = useSimulationDraftStore((state) => state.setDraft)
+  const injectSignal = useIntelligenceStore((state) => state.injectSignal)
+  const setActiveCountryContext = useIntelligenceStore((state) => state.setActiveCountryContext)
   const [cii, setCii] = useState<CIIOverview | null>(null)
   const [wmStatus, setWmStatus] = useState<WMStatus | null>(null)
   const [simRuns, setSimRuns] = useState<SimRun[]>([])
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
+  const [newsItems, setNewsItems] = useState<NewsItem[]>([])
+  const [focalPoints, setFocalPoints] = useState<FocalPoint[]>([])
   const [loading, setLoading] = useState(true)
   const [ciiHistory, setCiiHistory] = useState<number[]>([])
 
   useEffect(() => {
     const fetchAll = async () => {
       try {
-        const [ciiRes, wmRes, simRes, pipeRes] = await Promise.all([
+        const [ciiRes, wmRes, simRes, pipeRes, newsRes, focalRes] = await Promise.all([
           fetch('/api/intelligence/cii'),
           fetch('/api/intelligence/world-monitor/status'),
           fetch('/api/simulation/runs'),
           fetch('/api/pipeline/'),
+          fetch('/api/intelligence/news?limit=18'),
+          fetch('/api/intelligence/focal-points'),
         ])
         if (ciiRes.ok) {
           const d = await ciiRes.json() as RawCIIResponse
@@ -212,9 +264,19 @@ export default function Dashboard() {
             return next.length > 7 ? next.slice(-7) : next
           })
         }
-        if (wmRes.ok)   setWmStatus(await wmRes.json())
+        if (wmRes.ok) {
+          const status = await wmRes.json()
+          setWmStatus(status)
+          if (!status.running) {
+            await fetch('/api/intelligence/world-monitor/start', { method: 'POST' })
+            const nextStatusRes = await fetch('/api/intelligence/world-monitor/status')
+            if (nextStatusRes.ok) setWmStatus(await nextStatusRes.json())
+          }
+        }
         if (simRes.ok)  { const d = await simRes.json(); setSimRuns(d.runs ?? []) }
         if (pipeRes.ok) { const d = await pipeRes.json(); setPipelines(d.pipelines ?? []) }
+        if (newsRes.ok) { const d = await newsRes.json(); setNewsItems(d.items ?? []) }
+        if (focalRes.ok) { const d = await focalRes.json(); setFocalPoints(d.items ?? []) }
       } catch { /* silent */ }
       setLoading(false)
     }
@@ -228,17 +290,7 @@ export default function Dashboard() {
     cii?.level === 'high'     ? 'badge-high'     :
     cii?.level === 'elevated' ? 'badge-medium'   : 'badge-low'
 
-  if (loading) {
-    return (
-      <div className="empty-state" style={{ minHeight: '60vh' }}>
-        <div className="spinner" style={{ width: 32, height: 32 }} />
-        <p>正在连接 OrcaFish 后端...</p>
-      </div>
-    )
-  }
-
   const runningSims = simRuns.filter(r => r.status === 'running').length
-  const activePipelines = pipelines.filter(p => p.stage !== 'completed' && p.stage !== 'failed').length
   const completedPipelines = pipelines.filter(p => p.stage === 'completed').length
   const failedPipelines = pipelines.filter(p => p.stage === 'failed').length
 
@@ -256,6 +308,155 @@ export default function Dashboard() {
   const failedSims = simRuns.filter(r => r.status === 'failed').length
   const highRiskCountries = cii?.countries?.filter(c => c.score >= 65).slice(0, 4) ?? []
   const recentPipelines = pipelines.slice(0, 6)
+  const leadFocalPoints = focalPoints.slice(0, 3)
+  const latestNews = newsItems.slice(0, 8)
+  const countryWorkbench = useMemo<WorkbenchCountry[]>(() => {
+    const map = new Map<string, WorkbenchCountry>()
+
+    const upsert = (iso: string, patch: Partial<WorkbenchCountry>) => {
+      const current = map.get(iso) ?? {
+        iso,
+        name: COUNTRY_NAME_MAP[iso] || iso,
+        newsCount: 0,
+        focalCount: 0,
+        riskScore: cii?.countries.find(country => country.iso === iso)?.score ?? 0,
+        lastPublished: undefined,
+        latestHeadline: '等待同步',
+        latestSummary: '监控启动后会持续同步全球观测热点。',
+        urgency: 'watch',
+      }
+      map.set(iso, { ...current, ...patch })
+    }
+
+    for (const item of latestNews) {
+      const iso = item.country_iso || 'GLOBAL'
+      const existing = map.get(iso)
+      upsert(iso, {
+        newsCount: (existing?.newsCount ?? 0) + 1,
+        lastPublished: item.published_at,
+        latestHeadline: item.title,
+        latestSummary: item.summary || '监控引擎已接收到新的全球观测动态。',
+      })
+    }
+
+    for (const item of focalPoints) {
+      const iso = item.entity_id || 'GLOBAL'
+      const existing = map.get(iso)
+      upsert(iso, {
+        focalCount: (existing?.focalCount ?? 0) + 1,
+        riskScore: cii?.countries.find(country => country.iso === iso)?.score ?? (item.focal_score * 100),
+        urgency: item.urgency,
+        latestHeadline: item.top_headlines?.[0] || item.narrative || existing?.latestHeadline || 'Agent 关注焦点',
+        latestSummary: item.narrative || existing?.latestSummary || 'Agent 已提炼出新的关注对象。',
+      })
+    }
+
+    for (const item of highRiskCountries) {
+      upsert(item.iso, {
+        riskScore: item.score,
+        urgency: item.score >= 80 ? 'critical' : 'high',
+      })
+    }
+
+    return Array.from(map.values()).sort((a, b) => {
+      const activityA = a.newsCount + a.focalCount + (a.riskScore >= 65 ? 1 : 0)
+      const activityB = b.newsCount + b.focalCount + (b.riskScore >= 65 ? 1 : 0)
+      if (activityB !== activityA) return activityB - activityA
+      return new Date(b.lastPublished || 0).getTime() - new Date(a.lastPublished || 0).getTime()
+    }).slice(0, 6)
+  }, [cii?.countries, focalPoints, highRiskCountries, latestNews])
+
+  if (loading) {
+    return (
+      <div className="empty-state" style={{ minHeight: '60vh' }}>
+        <div className="spinner" style={{ width: 32, height: 32 }} />
+        <p>正在连接 OrcaFish 后端...</p>
+      </div>
+    )
+  }
+
+  const openCountryAnalysis = async (iso: string, score: number) => {
+    const name = COUNTRY_NAME_MAP[iso] || iso
+    let countryContext: CountryContextPayload | null = null
+    try {
+      const response = await fetch(`/api/intelligence/country-context/${iso}`)
+      if (response.ok) countryContext = await response.json() as CountryContextPayload
+    } catch {
+      countryContext = null
+    }
+    const observationContext: ObservationCountryContext = countryContext ? {
+      iso: countryContext.iso,
+      country_name: countryContext.country.name,
+      score: countryContext.country.score,
+      level: countryContext.country.level,
+      news_count: countryContext.summary.news_count,
+      signal_count: countryContext.summary.signal_count,
+      focal_count: countryContext.summary.focal_count,
+      latest_activity: countryContext.summary.latest_activity,
+      top_signal_types: countryContext.summary.top_signal_types,
+      narrative: countryContext.summary.narrative,
+      top_headlines: countryContext.summary.top_headlines,
+    } : {
+      iso,
+      country_name: name,
+      score,
+      level: score >= 80 ? 'critical' : score >= 65 ? 'high' : 'normal',
+      news_count: 0,
+      signal_count: 0,
+      focal_count: 0,
+    }
+    setActiveCountryContext(observationContext)
+    injectSignal({
+      id: `dashboard-${iso}-${Date.now()}`,
+      type: 'live',
+      intensity: Math.round(score),
+      timestamp: new Date().toISOString(),
+      description: `${name} 已从预测总览送入议题研判，当前 CII ${score.toFixed(1)}`,
+      source: 'live',
+      query: `${name} 风险升温`,
+    })
+    navigate('/analysis')
+  }
+
+  const openCountrySimulation = async (iso: string, score: number) => {
+    const name = COUNTRY_NAME_MAP[iso] || iso
+    let countryContext: CountryContextPayload | null = null
+    try {
+      const response = await fetch(`/api/intelligence/country-context/${iso}`)
+      if (response.ok) countryContext = await response.json() as CountryContextPayload
+    } catch {
+      countryContext = null
+    }
+    setDraft({
+      name: `${name} 未来预测`,
+      seed_content: `${name} 当前危机指数为 ${score.toFixed(1)}。请结合全球观测同步、Agent 焦点和新闻推送，预测未来 24-72 小时的态势演化。`,
+      simulation_requirement: `围绕 ${name} 的局势升温路径，预测未来 24-72 小时的外交、安全、平台扩散与舆论变化。`,
+      max_rounds: 40,
+      source: 'manual',
+      country_context: countryContext ? {
+        iso: countryContext.iso,
+        country_name: countryContext.country.name,
+        score: countryContext.country.score,
+        level: countryContext.country.level,
+        news_count: countryContext.summary.news_count,
+        signal_count: countryContext.summary.signal_count,
+        focal_count: countryContext.summary.focal_count,
+        latest_activity: countryContext.summary.latest_activity,
+        top_signal_types: countryContext.summary.top_signal_types,
+        narrative: countryContext.summary.narrative,
+        top_headlines: countryContext.summary.top_headlines,
+      } : {
+        iso,
+        country_name: name,
+        score,
+        level: score >= 80 ? 'critical' : score >= 65 ? 'high' : 'normal',
+        news_count: 0,
+        signal_count: 0,
+        focal_count: 0,
+      },
+    })
+    navigate('/simulation')
+  }
 
   // sparkline fallback: if no history, create mock from country scores
   const sparkData = ciiHistory.length >= 2
@@ -279,11 +480,11 @@ export default function Dashboard() {
           <div style={{ minWidth: 280, flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', marginBottom: 8 }}>
               <span style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', letterSpacing: '0.12em', color: 'var(--accent)' }}>
-                ORCAFISH / MIROFISH STYLE OVERVIEW
+                OrcaFish · 总览工作台
               </span>
               <span className={`badge ${wmStatus?.running ? 'badge-done' : 'badge-pending'}`}>
                 <span className="badge-dot" />
-                {wmStatus?.running ? '监测引擎运行中' : '监测引擎已停止'}
+                {wmStatus?.running ? '监测引擎运行中' : '自动启动中'}
               </span>
             </div>
             <div style={{ fontSize: '1.9rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.03em', lineHeight: 1.1 }}>
@@ -305,6 +506,10 @@ export default function Dashboard() {
               <span className="badge badge-normal">
                 <span className="badge-dot" />
                 {simRuns.length} 次推演记录
+              </span>
+              <span className="badge badge-done">
+                <span className="badge-dot" />
+                {countryWorkbench.length} 个国家工作台
               </span>
             </div>
             {cii?.timestamp && (
@@ -365,9 +570,9 @@ export default function Dashboard() {
 
           <div style={{ display: 'grid', gridTemplateRows: 'auto auto', gap: 'var(--sp-4)' }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 'var(--sp-4)' }}>
-              <StatCard label="活跃信号" value={signalsTotal(pipelines)} sub="全球情报源" accent="var(--accent)" />
+            <StatCard label="观测同步" value={countryWorkbench.length} sub={wmStatus?.running ? '监控已联动' : '等待联动'} accent="var(--accent)" />
               <StatCard label="推演次数" value={simRuns.length} sub={runningSims > 0 ? `${runningSims} 运行中` : '全部完成'} accent="var(--stage-active)" />
-              <StatCard label="自动流程" value={activePipelines} sub={`共 ${pipelines.length} 条流程`} accent="var(--medium)" />
+              <StatCard label="Agent 焦点" value={focalPoints.length} sub={`共 ${pipelines.length} 条流程`} accent="var(--medium)" />
             </div>
             <div style={{
               display: 'grid',
@@ -503,6 +708,87 @@ export default function Dashboard() {
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: 'var(--sp-4)' }}>
         <div className="panel">
+          <div className="panel-header">
+            <span className="panel-title">全球观测同步</span>
+            <span style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+              {countryWorkbench.length} 个国家工作台
+            </span>
+          </div>
+          <div className="panel-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
+            {countryWorkbench.length > 0 ? countryWorkbench.map((item) => (
+              <CountryWorkbenchCard
+                key={`${item.iso}-${item.lastPublished || 'na'}`}
+                iso={item.iso}
+                name={item.name}
+                riskScore={item.riskScore}
+                riskLevel={item.urgency}
+                newsCount={item.newsCount}
+                focalCount={item.focalCount}
+                signalCount={0}
+                lastActivity={item.lastPublished ? new Date(item.lastPublished).toLocaleTimeString('zh-CN', { hour12: false }) : '刚刚'}
+                latestHeadline={item.latestHeadline}
+                latestSummary={item.latestSummary}
+                highlight={isRecent(item.lastPublished)}
+                onAnalysis={item.iso !== 'GLOBAL' ? () => openCountryAnalysis(item.iso, item.riskScore) : undefined}
+                onSimulation={item.iso !== 'GLOBAL' ? () => openCountrySimulation(item.iso, item.riskScore) : undefined}
+              />
+            )) : (
+              <div className="empty-state" style={{ minHeight: 180 }}>
+                <p>监控启动后，这里会持续同步全球观测热点。</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-header">
+            <span className="panel-title">Agent 重点关注</span>
+            <span style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+              {leadFocalPoints.length} 个工作台焦点
+            </span>
+          </div>
+          <div className="panel-body" style={{ display: 'grid', gap: 'var(--sp-3)' }}>
+            {leadFocalPoints.length > 0 ? leadFocalPoints.map((item) => (
+              <div key={`${item.entity_id}-${item.narrative}`} style={{
+                padding: 'var(--sp-3)',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border)',
+                background: item.urgency === 'critical' ? 'rgba(220,50,20,0.06)' : item.urgency === 'high' ? 'rgba(240,140,30,0.06)' : 'rgba(22,163,74,0.05)',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                  <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{item.entity_id}</div>
+                  <span className={`badge ${item.urgency === 'critical' ? 'badge-critical' : item.urgency === 'high' ? 'badge-high' : 'badge-normal'}`}>
+                    <span className="badge-dot" />{Math.round(item.focal_score * 100)}%
+                  </span>
+                </div>
+                <div style={{ marginTop: 8, fontSize: '0.74rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                  {item.narrative}
+                </div>
+                {item.top_headlines?.[0] ? (
+                  <div style={{ marginTop: 8, fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.55 }}>
+                    {item.top_headlines[0]}
+                  </div>
+                ) : null}
+                <div style={{ marginTop: 8, display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+                  <button className="btn btn-primary btn-sm" onClick={() => openCountryAnalysis(item.entity_id, cii?.countries.find(country => country.iso === item.entity_id)?.score ?? item.focal_score * 100)}>
+                    发起研判
+                  </button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => openCountrySimulation(item.entity_id, cii?.countries.find(country => country.iso === item.entity_id)?.score ?? item.focal_score * 100)}>
+                    发起预测
+                  </button>
+                </div>
+              </div>
+            )) : (
+              <div className="empty-state" style={{ minHeight: 180 }}>
+                <p>监控启动后，这里会同步 Agent 提炼出的焦点对象。</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: 'var(--sp-4)' }}>
+        <div className="panel">
           <div className="panel-header" style={{ background: 'linear-gradient(135deg, var(--bg-raised) 0%, #f4f7ff 100%)' }}>
             <span className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round">
@@ -571,15 +857,23 @@ export default function Dashboard() {
                 background: 'rgba(255,255,255,0.8)',
               }}>
                 <div>
-                  <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{country.iso}</div>
+                  <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{COUNTRY_NAME_MAP[country.iso] || country.iso}</div>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2 }}>
                     {country.score.toFixed(1)} · 进入研判/推演优先队列
                   </div>
                 </div>
-                <span className="badge badge-critical">
-                  <span className="badge-dot" />
-                  重点
-                </span>
+                <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  <span className="badge badge-critical">
+                    <span className="badge-dot" />
+                    重点
+                  </span>
+                  <button className="btn btn-primary btn-sm" onClick={() => openCountryAnalysis(country.iso, country.score)}>
+                    研判
+                  </button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => openCountrySimulation(country.iso, country.score)}>
+                    预测
+                  </button>
+                </div>
               </div>
             )) : (
               <div className="empty-state" style={{ minHeight: 180 }}>
@@ -634,9 +928,4 @@ function IconPipeline() {
       <circle cx="18" cy="10" r="2" fill="currentColor" />
     </svg>
   )
-}
-
-function signalsTotal(pipelines: Pipeline[]): number | string {
-  const count = pipelines.reduce((acc, p) => acc + (p.cii_score > 0 ? 1 : 0), 0)
-  return count > 0 ? count : '—'
 }

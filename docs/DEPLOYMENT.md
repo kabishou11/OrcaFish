@@ -126,16 +126,67 @@ extra_body={"reasoning_split": True}
 
 ## 7. 可选服务
 
-### 7.1 Zep
+### 7.1 本地 Zep CE + Graphiti
 
-- 默认地址：`http://localhost:8000`
-- 配置项：
-  - `ZEP_BASE_URL`
-  - `ZEP_API_SECRET`
+当前 OrcaFish 的知识图谱主链推荐使用本地双服务：
 
-后端启动时会优先尝试访问本地 `zep`。
-如果 Docker 可用，会尝试拉起仓库中的 `zep/legacy/docker-compose.ce.yaml`。
-如果 Docker 不可用，后端会进入降级模式，不阻塞主页面启动。
+- `ZEP_BASE_URL=http://localhost:8000`：Zep CE 主服务
+- `GRAPHITI_BASE_URL=http://localhost:8003`：Graphiti 图谱写入/检索服务
+- `ZEP_API_SECRET`：若本地服务启用了鉴权，需与本地配置保持一致
+
+后端配置事实来源见：
+
+- [backend/config.py](F:/1work/OrcFish/orcafish/backend/config.py)
+- [.env.example](F:/1work/OrcFish/orcafish/.env.example)
+
+当前后端 `backend/graph/graph_builder.py` 的行为是：
+
+- 优先走 `GRAPHITI_BASE_URL`
+- 通过 `POST /messages` 写入文本块
+- 通过 `GET /episodes/{graph_id}` 获取图谱统计信息
+- 如果 Graphiti 不可用，则仿真页仍回退到本地聚合图，不阻塞主链演示
+
+#### 7.1.1 使用你已经跑起来的本地 zep-local
+
+如果你本机已经有单独维护的本地 Zep/Graphiti（例如 `F:\3work\1风险预测\zep-local`），最简单的方式不是重复部署，而是直接让 OrcaFish 指向它：
+
+```env
+ZEP_BASE_URL=http://localhost:8000
+GRAPHITI_BASE_URL=http://localhost:8003
+ZEP_API_SECRET=
+```
+
+只要端口和 secret 对得上，就可以直接联调。
+
+#### 7.1.2 使用仓库内自带 compose
+
+仓库中已有一份可直接参考的本地编排文件：
+
+- `zep/legacy/docker-compose.ce.yaml`
+
+它会拉起这些核心组件：
+
+- `zep`：`8000`
+- `graphiti`：`8003`
+- `neo4j`：`7474` / `7687`
+- `postgres`：`5432`
+
+如果你要直接使用这份 compose，建议在 `zep/legacy/` 目录补齐相应 `.env` 后再启动。
+
+#### 7.1.3 本地端口核对
+
+在 PowerShell 中可先确认端口是否真的在监听：
+
+```powershell
+Test-NetConnection localhost -Port 8000
+Test-NetConnection localhost -Port 8003
+```
+
+Graphiti 还可以额外检查：
+
+```powershell
+Invoke-WebRequest http://localhost:8003/healthcheck
+```
 
 ### 7.2 Crawl4AI
 
@@ -203,7 +254,20 @@ pnpm dev
 
 ## 10. 验证命令
 
-### 10.1 后端烟雾测试
+### 10.1 本地 Zep / Graphiti 端口验证
+
+```powershell
+Test-NetConnection localhost -Port 8000
+Test-NetConnection localhost -Port 8003
+```
+
+如果 `8003` 正常，再执行：
+
+```powershell
+Invoke-WebRequest http://localhost:8003/healthcheck
+```
+
+### 10.2 后端烟雾测试
 
 ```powershell
 cd F:\1work\OrcFish\orcafish
@@ -214,7 +278,7 @@ cd F:\1work\OrcFish\orcafish
 
 - 输出 `backend-smoke-ok`
 
-### 10.2 前端构建检查
+### 10.3 前端构建检查
 
 ```powershell
 cd F:\1work\OrcFish\orcafish\frontend
@@ -244,10 +308,10 @@ pnpm build
 常见原因：
 
 - 启动时检查 `crawl4ai`
-- 启动时检查 `zep`
-- Docker 未启动导致 `zep` 检查等待
+- 启动时检查本地 `zep` / `graphiti`
+- Docker 未启动导致本地图谱服务检查等待
 
-如果只是今晚演示，可以先接受降级模式，不影响主页面起起来。
+如果只是今晚演示，可以先接受降级模式，不影响主页面起起来；只是 `/api/simulation/runs/{run_id}/graph` 返回的远端 metadata 会退回 `local_only`。
 
 ### 11.3 `python -m backend.main` 启不来
 
@@ -269,7 +333,15 @@ pnpm build
 
 如果构建通过，说明前端代码本身是可编译的。
 
-## 12. 安全说明
+## 12. 当前图谱能力边界
+
+当前版本已经接通了 `Simulation run -> Graphiti/Zep metadata -> 前端图谱接口` 的主闭环，但要准确理解边界：
+
+- `GET /api/simulation/runs/{run_id}/graph` 中的 `project_id`、`graph_id`、`graph_source`、`graph_entity_count`、`graph_relation_count`、`graph_entity_types`、`graph_synced_at` 已来自本地 Graphiti/Zep 同步结果
+- 前端页面当前主要消费 `nodes/edges`，而这部分仍保留本地聚合生成与降级回退
+- 因此现在可以说“本地 Zep / Graphiti 已接上并可演示”，但还不应表述成“所有图结构都完全由远端图数据库直出”
+
+## 13. 安全说明
 
 - 不要把任何 API Key 写进仓库
 - 只把密钥放进 `.env`、CI Secret 或部署平台 Secret

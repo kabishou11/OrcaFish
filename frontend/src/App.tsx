@@ -1,9 +1,11 @@
+import { Suspense, lazy } from 'react'
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
-import Dashboard from './components/Dashboard'
-import Intelligence from './components/Intelligence/IntelligencePage'
-import AnalysisPage from './components/Analysis/AnalysisPage'
-import SimulationPage from './components/Simulation/SimulationPage'
-import PipelinePage from './components/Pipeline/PipelinePage'
+
+const Dashboard = lazy(() => import('./components/Dashboard'))
+const Intelligence = lazy(() => import('./components/Intelligence/IntelligencePage'))
+const AnalysisPage = lazy(() => import('./components/Analysis/AnalysisPage'))
+const SimulationPage = lazy(() => import('./components/Simulation/SimulationPage'))
+const PipelinePage = lazy(() => import('./components/Pipeline/PipelinePage'))
 
 /* ── Inline SVG icons ────────────────────────────────────────────────── */
 const IconRadar = () => (
@@ -100,13 +102,20 @@ export default function App() {
         </header>
 
         <main className="app-main">
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/intelligence" element={<Intelligence />} />
-            <Route path="/analysis" element={<AnalysisPage />} />
-            <Route path="/simulation" element={<SimulationPage />} />
-            <Route path="/pipeline" element={<PipelinePage />} />
-          </Routes>
+          <Suspense fallback={(
+            <div className="empty-state" style={{ minHeight: '60vh' }}>
+              <div className="spinner" style={{ width: 32, height: 32 }} />
+              <p>正在载入工作台...</p>
+            </div>
+          )}>
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/intelligence" element={<Intelligence />} />
+              <Route path="/analysis" element={<AnalysisPage />} />
+              <Route path="/simulation" element={<SimulationPage />} />
+              <Route path="/pipeline" element={<PipelinePage />} />
+            </Routes>
+          </Suspense>
         </main>
       </div>
     </BrowserRouter>

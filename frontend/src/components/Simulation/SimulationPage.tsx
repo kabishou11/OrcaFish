@@ -1,13 +1,15 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
+import DOMPurify from 'dompurify'
 import GraphPanel from './GraphPanel'
-import { useSimulationDraftStore } from '../../stores/simulationDraftStore'
+import { useSimulationDraftStore, type SimulationDraft } from '../../stores/simulationDraftStore'
 import WorkflowGuide, { type WorkflowGuideStep } from '../WorkflowGuide'
+import CountryWorkbenchCard from '../CountryWorkbenchCard'
 
 
 interface SimulationRun {
   run_id: string; status: string; rounds_completed: number; convergence_achieved: boolean;
   final_states?: Array<{ id: string; position: [number, number]; belief: number; influence: number }>;
-  duration_ms?: number; created_at?: string;
+  duration_ms?: number; created_at?: string; started_at?: string | null; max_rounds?: number;
 }
 
 // ── KG types for local state ─────────────────────────────────────────────────
@@ -34,28 +36,36 @@ function SimulationStreamPanel({ runId, runStatus: _runStatus }: { runId: string
 
   useEffect(() => {
     if (!runId) return
+    let active = true
+    const currentRunId = runId
     seenIdsRef.current = new Set()
     setActions([])
 
     const poll = async () => {
       try {
-        const acRes = await fetch(`/api/simulation/runs/${runId}/detail`)
-        if (acRes.ok) {
-          const ac = await acRes.json() as { all_actions?: SimAction[] }
-          setActions(prev => {
-            const newOnes = (ac.all_actions || []).filter(a => {
-              if (seenIdsRef.current.has(a.id)) return false
-              seenIdsRef.current.add(a.id); return true
-            })
-            return newOnes.length > 0 ? [...prev, ...newOnes] : prev
+        const acRes = await fetch(`/api/simulation/runs/${currentRunId}/detail`)
+        if (!acRes.ok || !active) return
+        const ac = await acRes.json() as { all_actions?: SimAction[] }
+        if (!active) return
+        setActions(prev => {
+          const newOnes = (ac.all_actions || []).filter(a => {
+            if (seenIdsRef.current.has(a.id)) return false
+            seenIdsRef.current.add(a.id)
+            return true
           })
-        }
+          return newOnes.length > 0 ? [...prev, ...newOnes] : prev
+        })
       } catch (_) { /* ignore network errors during polling */ }
     }
 
-    poll()
-    const id = setInterval(poll, 3000)
-    return () => clearInterval(id)
+    void poll()
+    const id = setInterval(() => {
+      void poll()
+    }, 3000)
+    return () => {
+      active = false
+      clearInterval(id)
+    }
   }, [runId])
 
   useEffect(() => {
@@ -176,7 +186,7 @@ function SimulationStreamPanel({ runId, runStatus: _runStatus }: { runId: string
             [{formatTime(new Date().toISOString())}]
             {actions.length > 0
               ? ` 已捕获 ${actions.length} 个事件 · 流活跃`
-              : ' 轮询仿真数据流中...'}
+              : ' 正在轮询未来演化数据流...'}
           </div>
         </div>
       </div>
@@ -198,7 +208,7 @@ function PlatformStatusCard({ platform, status, runStatus }: {
 }) {
   const accentColor = platform === 'twitter' ? 'var(--accent)' : '#ff8c42'
   const label = platform === 'twitter' ? '信息广场' : '话题社区'
-  const platformName = platform === 'twitter' ? 'X / Twitter' : 'Reddit'
+  const platformName = platform === 'twitter' ? '信息广场' : '话题社区'
   const iconPath = platform === 'twitter'
     ? 'M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z'
     : 'M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm4.327 9.873c.02-.449-.322-.827-.77-.844-3.493-.133-6.468-1.708-6.468-5.137 0-.462.052-.912.156-1.343a.94.94 0 0 0-.534-.777.955.955 0 0 0-.884.142C5.606 4.052 4.854 6.264 5.22 8.24c.017.091.027.184.027.28 0 2.494-1.25 4.18-2.772 4.18-1.396 0-2.102-1.11-2.102-2.24 0-2.833 2.528-5.76 7.104-5.76 3.772 0 6.16 2.728 6.16 6.08 0 3.104-1.73 5.612-4.328 5.612-.91 0-1.67-.462-2.028-.977l-1.96 1.06c.603 1.168 1.894 1.95 3.988 1.95 2.96 0 5.532-2.326 5.532-5.21 0-2.86-1.86-4.954-3.98-4.954z'
@@ -285,31 +295,62 @@ const REPORT_SECTION_LABELS: Record<string, string> = {
   'recommendation': '建议',
 }
 
-function ReportViewer({ runId, onClose }: { runId: string; onClose: () => void }) {
+function formatCountryContextTime(ts?: string | null) {
+  if (!ts) return '等待新的观测同步'
+  try {
+    return new Date(ts).toLocaleString('zh-CN', { hour12: false })
+  } catch {
+    return ts
+  }
+}
+
+function ReportViewer({
+  runId,
+  onClose,
+  countryContext,
+}: {
+  runId: string
+  onClose: () => void
+  countryContext?: CountryContextDraftSummary | null
+}) {
   const [report, setReport] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [activeSection, setActiveSection] = useState<string | null>(null)
   const contentRef = useRef<HTMLDivElement>(null)
 
-  // Extract sections from HTML headings
-  const extractSections = useCallback((): ReportSection[] => {
-    if (!report) return []
+  const processedReport = useMemo(() => {
+    if (!report) {
+      return { html: null as string | null, sections: [] as ReportSection[] }
+    }
+
+    const sanitizedHtml = DOMPurify.sanitize(report, { USE_PROFILES: { html: true } })
     const parser = new DOMParser()
-    const doc = parser.parseFromString(report, 'text/html')
-    const headings = doc.querySelectorAll('h1, h2, h3, h4')
-    const sections: ReportSection[] = []
-    headings.forEach((h, i) => {
-      const text = h.textContent?.trim() || ''
-      const id = h.id || `section-${i}`
-      // Auto-generate stable IDs
-      if (!h.id) h.setAttribute('id', id)
-      // Map to known section labels
+    const doc = parser.parseFromString(sanitizedHtml, 'text/html')
+    const headings = Array.from(doc.querySelectorAll('h1, h2, h3, h4'))
+    const usedIds = new Set<string>()
+
+    const sections = headings.map((heading, index) => {
+      const text = heading.textContent?.trim() || ''
       const key = text.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
-      const label = REPORT_SECTION_LABELS[key] || text
-      sections.push({ id, label })
+      const label = REPORT_SECTION_LABELS[key] || text || `章节 ${index + 1}`
+      const fallbackId = `section-${index}`
+      let id = heading.id || key || fallbackId
+
+      while (usedIds.has(id)) {
+        id = `${fallbackId}-${usedIds.size}`
+      }
+
+      usedIds.add(id)
+      heading.id = id
+
+      return { id, label }
     })
-    return sections
+
+    return {
+      html: doc.body.innerHTML,
+      sections,
+    }
   }, [report])
 
   // Load report
@@ -330,8 +371,8 @@ function ReportViewer({ runId, onClose }: { runId: string; onClose: () => void }
   const scrollToSection = useCallback((id: string) => {
     setActiveSection(id)
     if (contentRef.current) {
-      const el = contentRef.current.querySelector(`#${id}`)
-      if (el) {
+      const el = contentRef.current.ownerDocument.getElementById(id)
+      if (el && contentRef.current.contains(el)) {
         el.scrollIntoView({ behavior: 'smooth', block: 'start' })
       } else {
         contentRef.current.scrollTop = 0
@@ -339,9 +380,15 @@ function ReportViewer({ runId, onClose }: { runId: string; onClose: () => void }
     }
   }, [])
 
-  const sections = extractSections()
+  const sanitizedReport = processedReport.html
+  const sections = processedReport.sections
   // Unique sections preserving order
   const uniqueSections = sections.filter((s: ReportSection, i: number) => sections.findIndex((x: ReportSection) => x.label === s.label) === i)
+  const countryMetricItems = [
+    { label: '新闻', value: countryContext?.news_count ?? 0 },
+    { label: '信号', value: countryContext?.signal_count ?? 0 },
+    { label: '焦点', value: countryContext?.focal_count ?? 0 },
+  ]
 
   return (
     <div className="report-drawer-overlay" onClick={onClose}>
@@ -351,16 +398,16 @@ function ReportViewer({ runId, onClose }: { runId: string; onClose: () => void }
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)' }}>
             <FileIcon />
             <div>
-              <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>仿真报告</div>
+              <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>未来预测报告</div>
               <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: 1 }}>
                 {runId}
               </div>
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
-            {sections.length > 0 && (
+            {uniqueSections.length > 0 && (
               <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginRight: 'var(--sp-2)' }}>
-                {sections.length} 个章节
+                {uniqueSections.length} 个章节
               </div>
             )}
             <button className="btn btn-ghost btn-sm" onClick={onClose} style={{ color: 'var(--text-secondary)', padding: '6px 10px' }}>
@@ -368,12 +415,80 @@ function ReportViewer({ runId, onClose }: { runId: string; onClose: () => void }
             </button>
           </div>
         </div>
+        {countryContext?.iso ? (
+          <div style={{
+            padding: '10px 16px',
+            borderBottom: '1px solid var(--border)',
+            background: 'linear-gradient(135deg, rgba(37,99,235,0.06), rgba(255,255,255,0.98))',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}>
+            <div>
+              <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 4 }}>
+                观察包来源
+              </div>
+              <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                {(countryContext.country_name || countryContext.name || countryContext.iso)} · {countryContext.iso}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {typeof countryContext.score === 'number' ? (
+                <span className={`badge ${String(countryContext.level || '').toLowerCase() === 'critical' ? 'badge-critical' : String(countryContext.level || '').toLowerCase() === 'high' ? 'badge-high' : 'badge-normal'}`}>
+                  <span className="badge-dot" />CII {countryContext.score.toFixed(1)}
+                </span>
+              ) : null}
+              {countryContext.latest_activity ? (
+                <span style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.05)', border: '1px solid rgba(37,99,235,0.1)' }}>
+                  最新活动 {new Date(countryContext.latest_activity).toLocaleString('zh-CN', { hour12: false })}
+                </span>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
 
         {/* Body: sidebar + content */}
         <div className="report-drawer-body">
           {/* Section Nav */}
           <div className="report-section-nav">
             <div className="report-section-nav-title">导航</div>
+            {countryContext?.iso ? (
+              <div style={{
+                margin: '0 0 var(--sp-3)',
+                padding: '10px 12px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid rgba(37,99,235,0.12)',
+                background: 'linear-gradient(135deg, rgba(37,99,235,0.05), rgba(255,255,255,0.96))',
+                display: 'grid',
+                gap: 8,
+              }}>
+                <div>
+                  <div style={{ fontSize: '0.66rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 4 }}>
+                    观察包摘要
+                  </div>
+                  <div style={{ fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                    {(countryContext.country_name || countryContext.name || countryContext.iso)} · {countryContext.iso}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {typeof countryContext.score === 'number' ? (
+                    <span className={`badge ${String(countryContext.level || '').toLowerCase() === 'critical' ? 'badge-critical' : String(countryContext.level || '').toLowerCase() === 'high' ? 'badge-high' : 'badge-normal'}`}>
+                      <span className="badge-dot" />CII {countryContext.score.toFixed(1)}
+                    </span>
+                  ) : null}
+                  {countryMetricItems.map((item) => (
+                    <span key={item.label} style={{ fontSize: '0.62rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.05)', border: '1px solid rgba(37,99,235,0.1)' }}>
+                      {item.label} {item.value}
+                    </span>
+                  ))}
+                </div>
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                  {countryContext.narrative || '该报告沿着全球观测的国家观察包继续展开。'}
+                </div>
+              </div>
+            ) : null}
             {loading ? (
               <div style={{ display: 'flex', justifyContent: 'center', padding: 'var(--sp-6)' }}>
                 <div className="spinner" />
@@ -401,7 +516,7 @@ function ReportViewer({ runId, onClose }: { runId: string; onClose: () => void }
               <div className="report-loading">
                 <div className="spinner" style={{ width: 28, height: 28 }} />
                 <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                  正在生成报告...
+                  正在整理未来预测报告...
                 </div>
               </div>
             ) : error ? (
@@ -409,11 +524,68 @@ function ReportViewer({ runId, onClose }: { runId: string; onClose: () => void }
                 <div style={{ color: 'var(--critical)', fontWeight: 600, marginBottom: 'var(--sp-2)' }}>加载失败</div>
                 <div style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>{error}</div>
               </div>
-            ) : report ? (
-              <div
-                className="report-body"
-                dangerouslySetInnerHTML={{ __html: report }}
-              />
+            ) : sanitizedReport ? (
+              <div style={{ display: 'grid', gap: 'var(--sp-4)' }}>
+                {countryContext?.iso ? (
+                  <div style={{
+                    border: '1px solid rgba(37,99,235,0.12)',
+                    borderRadius: 'var(--radius)',
+                    background: 'linear-gradient(135deg, rgba(37,99,235,0.05), rgba(255,255,255,0.98))',
+                    padding: '14px 16px',
+                  }}>
+                    <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.08em', marginBottom: 8 }}>
+                      OBSERVATION PACKAGE CONTEXT
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                      <div>
+                        <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                          {(countryContext.country_name || countryContext.name || countryContext.iso)} 的未来预测
+                        </div>
+                        <div style={{ marginTop: 4, fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                          该报告基于全球观测阶段的国家观察包生成，保留新闻、信号与 Agent 焦点上下文。
+                        </div>
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textAlign: 'right' }}>
+                        <div>最近活动</div>
+                        <div style={{ marginTop: 4, color: 'var(--text-primary)', fontWeight: 700 }}>
+                          {formatCountryContextTime(countryContext.latest_activity)}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {typeof countryContext.score === 'number' ? (
+                        <span className={`badge ${String(countryContext.level || '').toLowerCase() === 'critical' ? 'badge-critical' : String(countryContext.level || '').toLowerCase() === 'high' ? 'badge-high' : 'badge-normal'}`}>
+                          <span className="badge-dot" />CII {countryContext.score.toFixed(1)}
+                        </span>
+                      ) : null}
+                      {countryMetricItems.map((item) => (
+                        <span key={item.label} style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.05)', border: '1px solid rgba(37,99,235,0.1)' }}>
+                          {item.label} {item.value}
+                        </span>
+                      ))}
+                      {(countryContext.top_signal_types ?? []).slice(0, 4).map((item) => (
+                        <span key={item} style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.05)', border: '1px solid rgba(22,163,74,0.1)' }}>
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                    {countryContext.narrative ? (
+                      <div style={{ marginTop: 10, fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.75 }}>
+                        {countryContext.narrative}
+                      </div>
+                    ) : null}
+                    {(countryContext.top_headlines ?? []).length > 0 ? (
+                      <div style={{ marginTop: 10, fontSize: '0.74rem', color: 'var(--text-primary)', lineHeight: 1.7 }}>
+                        <strong>观测起点：</strong>{countryContext.top_headlines?.[0]}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                <div
+                  className="report-body"
+                  dangerouslySetInnerHTML={{ __html: sanitizedReport }}
+                />
+              </div>
             ) : (
               <div style={{ padding: 'var(--sp-8)', textAlign: 'center', color: 'var(--text-muted)' }}>
                 报告内容为空
@@ -441,6 +613,30 @@ function FileIcon() {
 // ── Main Simulation Page ──────────────────────────────────────────────────────
 interface CreateConfig { seed_content: string; simulation_requirement: string; max_rounds: number; name: string }
 
+interface CountryContextDraftSummary {
+  iso: string
+  country_name?: string
+  name?: string
+  score?: number
+  level?: string
+  news_count?: number
+  signal_count?: number
+  focal_count?: number
+  latest_activity?: string | null
+  narrative?: string
+  top_signal_types?: string[]
+  top_headlines?: string[]
+}
+
+type SimulationDraftWithCountryContext = SimulationDraft & {
+  country_context?: CountryContextDraftSummary
+  countryContext?: CountryContextDraftSummary
+  context?: CountryContextDraftSummary
+  summary?: CountryContextDraftSummary
+  country?: CountryContextDraftSummary
+  source_country?: CountryContextDraftSummary
+}
+
 export default function SimulationPage() {
   const draft = useSimulationDraftStore((s) => s.draft)
   const clearDraft = useSimulationDraftStore((s) => s.clearDraft)
@@ -451,15 +647,33 @@ export default function SimulationPage() {
     seed_content: '',
     simulation_requirement: '',
     max_rounds: 40,
-    name: '仿真推演',
+    name: '未来预测',
   })
   const [selectedRun, setSelectedRun] = useState<SimulationRun | null>(null)
   const [showReport, setShowReport] = useState(false)
+  const [viewMode, setViewMode] = useState<'graph' | 'split' | 'workbench'>('split')
   const [startingRun, setStartingRun] = useState(false)
   const [stoppingRun, setStoppingRun] = useState(false)
   const [runStatus, setRunStatus] = useState<SimRunStatus | null>(null)
   const [graphData, setGraphData] = useState<{ nodes: KGNode[]; edges: KGLink[] } | null>(null)
   const [graphLoading, setGraphLoading] = useState(false)
+  const [graphRefreshKey, setGraphRefreshKey] = useState(0)
+  const draftPayload = draft as SimulationDraftWithCountryContext | null
+  const draftCountryContext =
+    draftPayload?.country_context ??
+    draftPayload?.countryContext ??
+    draftPayload?.context ??
+    draftPayload?.summary ??
+    draftPayload?.country ??
+    draftPayload?.source_country
+
+  const hasCountryContext = Boolean(draftCountryContext?.iso)
+  const draftCountryName = draftCountryContext?.country_name || draftCountryContext?.name || draftCountryContext?.iso
+  const countryContextMetrics = [
+    { label: '新闻', value: draftCountryContext?.news_count ?? 0 },
+    { label: '信号', value: draftCountryContext?.signal_count ?? 0 },
+    { label: '焦点', value: draftCountryContext?.focal_count ?? 0 },
+  ]
 
   useEffect(() => {
     if (!draft) return
@@ -472,20 +686,46 @@ export default function SimulationPage() {
     }))
   }, [draft])
 
-  // Fetch graph data when selected run changes
+  // Fetch graph data when selected run changes or while prediction keeps evolving
   useEffect(() => {
-    if (!selectedRun?.run_id) { setGraphData(null); return }
-    setGraphLoading(true)
-    fetch(`/api/simulation/runs/${selectedRun.run_id}/graph`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d && (d.nodes?.length > 0 || d.edges?.length > 0)) {
-          setGraphData({ nodes: d.nodes as KGNode[], edges: d.edges as KGLink[] })
-        }
-      })
-      .catch(() => {})
-      .finally(() => setGraphLoading(false))
-  }, [selectedRun?.run_id])
+    if (!selectedRun?.run_id) {
+      setGraphData(null)
+      setGraphLoading(false)
+      return
+    }
+
+    let active = true
+
+    const loadGraph = async () => {
+      setGraphLoading(true)
+      try {
+        const response = await fetch(`/api/simulation/runs/${selectedRun.run_id}/graph`)
+        if (!response.ok) throw new Error('graph fetch failed')
+        const data = await response.json() as { nodes?: KGNode[]; edges?: KGLink[] }
+        if (!active) return
+        setGraphData({
+          nodes: Array.isArray(data.nodes) ? data.nodes : [],
+          edges: Array.isArray(data.edges) ? data.edges : [],
+        })
+      } catch {
+        if (!active) return
+        setGraphData(null)
+      } finally {
+        if (active) setGraphLoading(false)
+      }
+    }
+
+    setGraphData(null)
+    void loadGraph()
+    const id = setInterval(() => {
+      void loadGraph()
+    }, selectedRun.status === 'running' ? 3000 : 10000)
+
+    return () => {
+      active = false
+      clearInterval(id)
+    }
+  }, [selectedRun?.run_id, selectedRun?.status, graphRefreshKey])
 
   // Poll runs list every 10s to keep status fresh; sync selected run status every 3s
   useEffect(() => {
@@ -519,33 +759,59 @@ export default function SimulationPage() {
 
   // Sync selectedRun with backend every 3s
   useEffect(() => {
-    if (!selectedRun) return
+    if (!selectedRun?.run_id) return
+    let active = true
+    const currentRunId = selectedRun.run_id
+
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/simulation/runs/${currentRunId}`)
+        if (!response.ok || !active) return
+        const data = await response.json() as Partial<SimulationRun>
+        if (!active) return
+        setSelectedRun(prev => prev?.run_id === currentRunId ? { ...prev, ...data } : prev)
+        setRuns(prev => prev.map(r => r.run_id === currentRunId ? { ...r, ...data } : r))
+      } catch (_) { /* ignore network errors during polling */ }
+    }
+
+    void poll()
     const t = setInterval(() => {
-      fetch(`/api/simulation/runs/${selectedRun.run_id}`)
-        .then(r => r.ok ? r.json() : null)
-        .then(d => {
-          if (d) {
-            setSelectedRun(prev => prev ? { ...prev, ...d } : prev)
-            setRuns(prev => prev.map(r => r.run_id === selectedRun.run_id ? { ...r, ...d } : r))
-          }
-        })
-        .catch(() => {})
+      void poll()
     }, 3000)
-    return () => clearInterval(t)
+    return () => {
+      active = false
+      clearInterval(t)
+    }
   }, [selectedRun?.run_id])
 
   // Poll platform status (runStatus) for Action Stream & Platform Status Cards
   useEffect(() => {
-    if (!selectedRun) { setRunStatus(null); return }
+    if (!selectedRun?.run_id) {
+      setRunStatus(null)
+      return
+    }
+
+    let active = true
+    const currentRunId = selectedRun.run_id
+
     const poll = async () => {
       try {
-        const stRes = await fetch(`/api/simulation/runs/${selectedRun.run_id}/status`)
-        if (stRes.ok) setRunStatus(await stRes.json() as SimRunStatus)
+        const stRes = await fetch(`/api/simulation/runs/${currentRunId}/status`)
+        if (!stRes.ok || !active) return
+        const status = await stRes.json() as SimRunStatus
+        if (!active) return
+        setRunStatus(status)
       } catch (_) { /* ignore */ }
     }
-    poll()
-    const id = setInterval(poll, 3000)
-    return () => clearInterval(id)
+
+    void poll()
+    const id = setInterval(() => {
+      void poll()
+    }, 3000)
+    return () => {
+      active = false
+      clearInterval(id)
+    }
   }, [selectedRun?.run_id])
 
   const platformStatus = (platform: string) => {
@@ -568,7 +834,7 @@ export default function SimulationPage() {
       const res = await fetch('/api/simulation/runs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: config.name || config.seed_content.slice(0, 40) || '仿真推演',
+          name: config.name || config.seed_content.slice(0, 40) || '未来预测',
           seed_content: config.seed_content,
           simulation_requirement: config.simulation_requirement || `分析并预测以下议题的演化趋势：${config.seed_content}`,
           max_rounds: config.max_rounds,
@@ -623,6 +889,16 @@ export default function SimulationPage() {
     const statusLabels: Record<string,string> = { completed:'已完成', running:'运行中', failed:'失败', created:'待启动', paused:'已暂停' }
     return <span className={`badge ${cls}`}><span className="badge-dot" />{statusLabels[status] ?? status}</span>
   }
+  const getRunStatusLabel = (status?: string) => {
+    const statusLabels: Record<string, string> = {
+      completed: '已完成',
+      running: '运行中',
+      failed: '失败',
+      created: '待启动',
+      paused: '已暂停',
+    }
+    return status ? (statusLabels[status] ?? status) : '未选择'
+  }
 
   const inputStyle = (focused = false) => ({
     width: '100%', padding: '8px 12px',
@@ -632,29 +908,74 @@ export default function SimulationPage() {
     transition: 'border-color var(--t-fast)',
   })
 
+  const totalRounds = selectedRun?.max_rounds ?? runStatus?.total_rounds ?? config.max_rounds
   const progress = selectedRun?.status === 'running' && selectedRun?.rounds_completed
-    ? Math.min((selectedRun.rounds_completed / config.max_rounds) * 100, 100)
+    ? Math.min((selectedRun.rounds_completed / totalRounds) * 100, 100)
     : selectedRun?.status === 'completed' ? 100 : 0
+  const estimateRemaining = () => {
+    if (!selectedRun) return '等待创建预测记录'
+    if (selectedRun.status === 'completed' && selectedRun.duration_ms) {
+      return `已完成 · ${(selectedRun.duration_ms / 1000).toFixed(1)} 秒`
+    }
+    if (selectedRun.status !== 'running') {
+      return '创建后可估算未来路径生成时间'
+    }
+    if (selectedRun.started_at && selectedRun.rounds_completed > 0) {
+      const elapsedMs = Date.now() - new Date(selectedRun.started_at).getTime()
+      const avgPerRound = elapsedMs / selectedRun.rounds_completed
+      const remainingRounds = Math.max(totalRounds - selectedRun.rounds_completed, 0)
+      const remainingMs = Math.max(avgPerRound * remainingRounds, 0)
+      if (remainingMs >= 60000) return `预计还需约 ${(remainingMs / 60000).toFixed(1)} 分钟`
+      return `预计还需约 ${Math.max(1, Math.round(remainingMs / 1000))} 秒`
+    }
+    return `预计总轮次 ${totalRounds}，正在建立未来路径`
+  }
   const workflowSteps: WorkflowGuideStep[] = [
     {
       label: 'STEP 1',
-      title: '先创建推演记录',
-      description: '把图谱种子、推演目标和轮次先固化成一条可操作记录。',
+      title: '先创建预测记录',
+      description: '把图谱种子、预测目标和轮次先固化成一条可操作记录。',
       status: runs.length > 0 ? 'done' : 'active' as const,
     },
     {
       label: 'STEP 2',
-      title: '再启动模拟环境',
-      description: '选中一条记录后手动启动，避免刚创建就直接冲进运行态。',
+      title: '再启动未来预测',
+      description: '选中一条记录后手动启动，让未来路径从知识图谱开始逐步展开。',
       status: selectedRun?.status === 'running' ? 'active' : selectedRun?.status === 'completed' ? 'done' : 'pending' as const,
     },
     {
       label: 'STEP 3',
       title: '最后看图谱与报告',
-      description: '行动流、知识图谱和报告会在仿真推进后逐步成形。',
+      description: '行动流、关系图谱和预测报告会随着未来演化逐步成形。',
       status: selectedRun?.status === 'completed' ? 'active' : 'pending' as const,
     },
   ]
+
+  const leftPaneVisible = viewMode !== 'graph'
+  const centerPaneVisible = viewMode !== 'workbench'
+  const rightPaneVisible = viewMode !== 'graph'
+  const graphPaneColumns = viewMode === 'graph'
+    ? 'minmax(0, 1fr)'
+    : viewMode === 'workbench'
+      ? 'minmax(320px, 0.92fr) minmax(320px, 1.08fr)'
+      : '240px minmax(0, 1.72fr) 320px'
+  const activeModeMeta = {
+    graph: {
+      label: '图谱主视图',
+      description: '把未来关系图谱切成页面主舞台，专注读边、看路径、检查节点与关系，不再需要额外全屏遮罩。',
+      status: '图谱主视图',
+    },
+    split: {
+      label: '双栏推演台',
+      description: '左侧保留输入与记录，中间图谱主导，右侧工作台同步服务当前预测过程。',
+      status: '双栏协同中',
+    },
+    workbench: {
+      label: '工作台模式',
+      description: '把图谱退到后台，集中处理记录、启动、平台态势与预测详情。',
+      status: '工作台处理中',
+    },
+  }[viewMode]
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-6)' }}>
@@ -672,18 +993,51 @@ export default function SimulationPage() {
       }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
-            MiroFish 风格未来推演台
+            MiroFish 风格未来预测台 · {activeModeMeta.label}
           </div>
           <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: 4 }}>
-            图谱构建 → 环境搭建 → 开始模拟 → 生成报告
+            {activeModeMeta.description} 当前状态：{selectedRun?.status === 'running' ? '未来路径生成中' : selectedRun?.status === 'completed' ? '已完成，可查看报告' : selectedRun ? '记录已就绪，等待启动' : activeModeMeta.status}
           </div>
           {draft && (
             <div style={{ marginTop: 10, fontSize: '0.74rem', color: 'var(--accent)', fontWeight: 600 }}>
-              已接收来自议题研判的推演输入，创建后即可进入仿真闭环
+              已接收来自议题研判的预测输入，创建后即可进入未来预测闭环
             </div>
           )}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <div style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: 4,
+            borderRadius: 999,
+            background: 'rgba(255,255,255,0.82)',
+            border: '1px solid var(--border)',
+          }}>
+            {[
+              ['graph', '图谱'],
+              ['split', '双栏'],
+              ['workbench', '工作台'],
+            ].map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setViewMode(mode as 'graph' | 'split' | 'workbench')}
+                style={{
+                  border: 'none',
+                  borderRadius: 999,
+                  padding: '6px 12px',
+                  background: viewMode === mode ? 'var(--accent)' : 'transparent',
+                  color: viewMode === mode ? '#fff' : 'var(--text-secondary)',
+                  fontSize: '0.72rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div style={{
             display: 'flex',
             alignItems: 'center',
@@ -695,7 +1049,7 @@ export default function SimulationPage() {
           }}>
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: selectedRun?.status === 'running' ? 'var(--accent)' : 'var(--text-muted)' }} />
             <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-              {selectedRun?.status === 'running' ? 'SIMULATION LIVE' : 'WORKBENCH READY'}
+              {selectedRun?.status === 'running' ? '未来路径生成中' : activeModeMeta.status}
             </span>
           </div>
           <span className="badge badge-active"><span className="badge-dot" />{runs.length} 条记录</span>
@@ -703,9 +1057,9 @@ export default function SimulationPage() {
       </div>
 
       <WorkflowGuide
-        eyebrow="SIMULATION PLAYBOOK"
-        title="先建记录，再启动，再读结果"
-        description="这一页已经按 MiroFish 的工作台节奏收口。先把输入固化，再启动推演，最后查看图谱、行动流和报告，会比直接一把梭更稳。"
+        eyebrow="FUTURE FORECAST PLAYBOOK"
+        title="先建记录，再启动预测，再读未来路径"
+        description="这一页已经按 MiroFish 的工作台节奏收口。先把输入固化，再启动未来预测，最后查看图谱、行动流和报告，会比直接一把梭更稳。"
         steps={workflowSteps}
         actions={
           <>
@@ -719,7 +1073,7 @@ export default function SimulationPage() {
               onClick={() => selectedRun && handleStart(selectedRun.run_id)}
               style={{ opacity: (!selectedRun || selectedRun.status === 'running' || selectedRun.status === 'completed') ? 0.45 : 1 }}
             >
-              立即启动当前记录
+              立即启动当前预测
             </button>
           </>
         }
@@ -748,71 +1102,160 @@ export default function SimulationPage() {
                 )}
               </>
             ) : (
-              <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>选择一条仿真记录进行操作</span>
+              <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>选择一条未来预测记录进行操作</span>
             )}
           </div>
 
           {/* Right: action buttons */}
-          <div style={{ display: 'flex', gap: 'var(--sp-2)', flexShrink: 0 }}>
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={() => selectedRun && handleStart(selectedRun.run_id)}
-              disabled={!selectedRun || selectedRun.status === 'running' || selectedRun.status === 'completed' || startingRun}
-              title={!selectedRun ? '先选择一条仿真记录' : selectedRun.status === 'running' ? '仿真正在进行中' : selectedRun.status === 'completed' ? '仿真已完成' : '开始仿真'}
-              style={{ opacity: (!selectedRun || selectedRun.status === 'running' || selectedRun.status === 'completed') ? 0.45 : 1 }}
-            >
-              <PlayIcon />
-              {startingRun ? '启动中...' : '开始仿真'}
-            </button>
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={() => selectedRun && handleStop(selectedRun.run_id)}
-              disabled={!selectedRun || selectedRun.status !== 'running' || stoppingRun}
-              title={!selectedRun ? '先选择一条仿真记录' : selectedRun.status !== 'running' ? '当前状态无法停止' : '停止仿真'}
-              style={{ opacity: (!selectedRun || selectedRun.status !== 'running') ? 0.45 : 1 }}
-            >
-              <StopIcon />
-              {stoppingRun ? '停止中...' : '停止仿真'}
-            </button>
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={() => selectedRun && setShowReport(true)}
-              disabled={!selectedRun || selectedRun.status !== 'completed'}
-              title={!selectedRun ? '先选择一条仿真记录' : selectedRun.status !== 'completed' ? '仅在仿真完成后可用' : '查看报告'}
-              style={{ opacity: (!selectedRun || selectedRun.status !== 'completed') ? 0.45 : 1 }}
-            >
-              <FileIcon />
-              查看报告
-            </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end', flexShrink: 0 }}>
+            {hasCountryContext && (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                flexWrap: 'wrap',
+                justifyContent: 'flex-end',
+                padding: '6px 10px',
+                borderRadius: 999,
+                background: 'rgba(37,99,235,0.06)',
+                border: '1px solid rgba(37,99,235,0.12)',
+                color: 'var(--text-secondary)',
+                fontSize: '0.68rem',
+                fontFamily: 'var(--font-mono)',
+              }}>
+                <span>来源 {draftCountryName}</span>
+                <span>风险 {draftCountryContext?.level ? draftCountryContext.level.toUpperCase() : 'UNKNOWN'}</span>
+                <span>
+                  最新活动 {draftCountryContext?.latest_activity
+                    ? new Date(draftCountryContext.latest_activity).toLocaleString('zh-CN', { hour12: false })
+                    : '暂无最新活动'}
+                </span>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => selectedRun && handleStart(selectedRun.run_id)}
+                disabled={!selectedRun || selectedRun.status === 'running' || selectedRun.status === 'completed' || startingRun}
+                title={!selectedRun ? '先选择一条预测记录' : selectedRun.status === 'running' ? '预测正在进行中' : selectedRun.status === 'completed' ? '预测已完成' : '启动未来预测'}
+                style={{ opacity: (!selectedRun || selectedRun.status === 'running' || selectedRun.status === 'completed') ? 0.45 : 1 }}
+              >
+                <PlayIcon />
+                {startingRun ? '启动中...' : '启动预测'}
+              </button>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => selectedRun && handleStop(selectedRun.run_id)}
+                disabled={!selectedRun || selectedRun.status !== 'running' || stoppingRun}
+                title={!selectedRun ? '先选择一条预测记录' : selectedRun.status !== 'running' ? '当前状态无法停止' : '停止预测'}
+                style={{ opacity: (!selectedRun || selectedRun.status !== 'running') ? 0.45 : 1 }}
+              >
+                <StopIcon />
+                {stoppingRun ? '停止中...' : '停止预测'}
+              </button>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => selectedRun && setShowReport(true)}
+                disabled={!selectedRun || selectedRun.status !== 'completed'}
+                title={!selectedRun ? '先选择一条预测记录' : selectedRun.status !== 'completed' ? '仅在预测完成后可用' : hasCountryContext ? `查看 ${draftCountryName} 的未来预测报告` : '查看预测报告'}
+                style={{ opacity: (!selectedRun || selectedRun.status !== 'completed') ? 0.45 : 1 }}
+              >
+                <FileIcon />
+                {hasCountryContext ? `查看 ${draftCountryName} 报告` : '查看预测报告'}
+              </button>
+            </div>
+            {hasCountryContext && (
+              <div style={{ fontSize: '0.64rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', textAlign: 'right', lineHeight: 1.5 }}>
+                这条预测带着国家观察包进入工作台，启动后会沿着该上下文继续展开。
+              </div>
+            )}
           </div>
         </div>
-        {draft && !selectedRun && (
-          <div style={{
-            marginTop: 'var(--sp-4)',
-            paddingTop: 'var(--sp-4)',
-            borderTop: '1px solid var(--border)',
-            display: 'grid',
-            gridTemplateColumns: '1.2fr 1fr 120px',
-            gap: 'var(--sp-3)',
-            alignItems: 'center',
-          }}>
-            <div>
-              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: 4, letterSpacing: '0.06em' }}>来自研判的议题</div>
-              <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{draft.name}</div>
-              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.5 }}>
-                {draft.simulation_requirement}
+          {draft && !selectedRun && (
+            <div style={{
+              marginTop: 'var(--sp-4)',
+              paddingTop: 'var(--sp-4)',
+              borderTop: '1px solid var(--border)',
+              display: 'grid',
+              gridTemplateColumns: hasCountryContext ? '1.1fr 0.95fr 0.95fr 120px' : '1.2fr 1fr 120px',
+              gap: 'var(--sp-3)',
+              alignItems: 'center',
+            }}>
+              <div>
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: 4, letterSpacing: '0.06em' }}>来自研判的议题</div>
+                <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{draft.name}</div>
+                <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.5 }}>
+                  {draft.simulation_requirement}
+                </div>
+                {hasCountryContext && (
+                  <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(37,99,235,0.14)', background: 'linear-gradient(135deg, rgba(37,99,235,0.06), rgba(255,255,255,0.98))' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                      <div>
+                        <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 3 }}>
+                          来自全球观测的上下文包
+                        </div>
+                        <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                          {draftCountryName} · {draftCountryContext?.iso}
+                        </div>
+                      </div>
+                      {typeof draftCountryContext?.score === 'number' && (
+                        <span className={`badge ${String(draftCountryContext.level || '').toLowerCase() === 'critical' ? 'badge-critical' : String(draftCountryContext.level || '').toLowerCase() === 'high' ? 'badge-high' : 'badge-normal'}`}>
+                          <span className="badge-dot" />
+                          CII {draftCountryContext.score.toFixed(1)}
+                        </span>
+                      )}
+                    </div>
+                    {draftCountryContext?.narrative && (
+                      <div style={{ marginTop: 8, fontSize: '0.74rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                        {draftCountryContext.narrative}
+                      </div>
+                    )}
+                    {draftCountryContext?.top_signal_types?.length ? (
+                      <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {draftCountryContext.top_signal_types.slice(0, 4).map((signalType) => (
+                          <span key={signalType} style={{ fontSize: '0.62rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.05)', border: '1px solid rgba(37,99,235,0.1)' }}>
+                            {signalType}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {draftCountryContext?.top_headlines?.length ? (
+                      <div style={{ marginTop: 8, fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.55 }}>
+                        {draftCountryContext.top_headlines[0]}
+                      </div>
+                    ) : null}
+                    <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {countryContextMetrics.map((item) => (
+                        <span key={item.label} style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)' }}>
+                          {item.label} {item.value}
+                        </span>
+                      ))}
+                      {draftCountryContext?.latest_activity ? (
+                        <span style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)' }}>
+                          最新活动 {new Date(draftCountryContext.latest_activity).toLocaleString('zh-CN', { hour12: false })}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                )}
               </div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                <div>种子长度: {draft.seed_content.length}</div>
+                <div>最大轮次: {draft.max_rounds}</div>
+                <div>来源: {draft.source === 'analysis' ? '议题研判' : '手动'}</div>
+              </div>
+              {hasCountryContext && (
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', lineHeight: 1.7 }}>
+                  <div>国家: {draftCountryName}</div>
+                  <div>状态: {draftCountryContext?.level || 'unknown'}</div>
+                  <div>路径: 直接沿着这组上下文进入未来预测</div>
+                </div>
+              )}
+              <button className="btn btn-secondary btn-sm" onClick={clearDraft} style={{ justifyContent: 'center' }}>
+                清空草稿
+              </button>
             </div>
-            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-              <div>种子长度: {draft.seed_content.length}</div>
-              <div>最大轮次: {draft.max_rounds}</div>
-              <div>来源: {draft.source === 'analysis' ? '议题研判' : '手动'}</div>
-            </div>
-            <button className="btn btn-secondary btn-sm" onClick={clearDraft} style={{ justifyContent: 'center' }}>
-              清空草稿
-            </button>
-          </div>
-        )}
+          )}
       </div>
 
       {/* ── Workflow Steps ─────────────────────────────────────── */}
@@ -821,14 +1264,14 @@ export default function SimulationPage() {
           {
             key: 'step-1',
             title: 'Step 1 图谱种子',
-            desc: draft ? '已接收议题研判摘要，可直接构图' : '填写议题、背景与推演目标',
+            desc: draft ? '已接收议题研判摘要，可直接构图' : '填写议题、背景与预测目标',
             active: !selectedRun,
             done: Boolean(selectedRun || draft),
             accent: 'var(--accent)',
           },
           {
             key: 'step-2',
-            title: 'Step 2 创建推演',
+            title: 'Step 2 创建预测',
             desc: selectedRun ? `已创建 ${selectedRun.run_id}` : '生成运行记录与配置文件',
             active: Boolean(selectedRun && selectedRun.status === 'created'),
             done: Boolean(selectedRun),
@@ -836,8 +1279,8 @@ export default function SimulationPage() {
           },
           {
             key: 'step-3',
-            title: 'Step 3 开始模拟',
-            desc: selectedRun?.status === 'running' ? '双平台仿真进行中' : '启动代理体并观察行动流',
+            title: 'Step 3 启动预测',
+            desc: selectedRun?.status === 'running' ? '双平台未来路径生成中' : '启动代理体并观察行动流',
             active: selectedRun?.status === 'running',
             done: selectedRun?.status === 'completed',
             accent: 'var(--medium)',
@@ -845,7 +1288,7 @@ export default function SimulationPage() {
           {
             key: 'step-4',
             title: 'Step 4 生成报告',
-            desc: selectedRun?.status === 'completed' ? '可查看仿真报告与收敛结果' : '完成后生成预测报告',
+            desc: selectedRun?.status === 'completed' ? '可查看未来预测报告与收敛结果' : '完成后生成预测报告',
             active: selectedRun?.status === 'completed',
             done: false,
             accent: 'var(--low)',
@@ -885,21 +1328,22 @@ export default function SimulationPage() {
       </div>
 
       {/* ── Main Layout: 280px left (controls) | 1fr center (graph) | 300px right (status) ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr 300px', gap: 'var(--sp-4)', alignItems: 'start', minHeight: 720 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: graphPaneColumns, gap: 'var(--sp-4)', alignItems: 'start', minHeight: viewMode === 'graph' ? 820 : 780 }}>
 
         {/* ── Left: Controls + Runs ────────────────────────────────── */}
+        {leftPaneVisible && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
 
           {/* Runs List */}
           <div className="panel">
             <div className="panel-header">
-              <span className="panel-title">推演记录</span>
+              <span className="panel-title">预测记录</span>
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{runs.length}</span>
             </div>
             {loadingRuns ? (
               <div className="empty-state"><div className="spinner" /></div>
             ) : runs.length === 0 ? (
-              <div className="empty-state"><FishEmptyIcon /><p>暂无推演记录</p></div>
+              <div className="empty-state"><FishEmptyIcon /><p>暂无预测记录</p></div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: 'var(--sp-2)' }}>
                 {runs.map(run => (
@@ -933,7 +1377,7 @@ export default function SimulationPage() {
 
           {/* Create Form */}
           <div className="panel">
-            <div className="panel-header"><span className="panel-title">Step 1 / 创建推演</span><FishIcon /></div>
+            <div className="panel-header"><span className="panel-title">Step 1 / 创建未来预测</span><FishIcon /></div>
             <div className="panel-body">
               <form onSubmit={handleCreate} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
                 <div style={{
@@ -943,10 +1387,10 @@ export default function SimulationPage() {
                   borderRadius: 'var(--radius-sm)',
                 }}>
                   <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', marginBottom: 4 }}>
-                    GRAPH SEED
+                    FUTURE SEED
                   </div>
                   <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                    这里输入事件背景、关键参与方、已有研判或报道正文。创建后会先生成推演记录，再由你决定何时启动模拟。
+                    这里输入事件背景、关键参与方、已有研判或报道正文。创建后会先生成预测记录，再由你决定何时启动未来预测。
                   </div>
                 </div>
                 <div>
@@ -954,17 +1398,17 @@ export default function SimulationPage() {
                   <textarea
                     value={config.seed_content}
                     onChange={e => setConfig(p => ({ ...p, seed_content: e.target.value }))}
-                    placeholder="输入推演议题、报道摘要或来自研判页的综合结论..."
+                    placeholder="输入预测议题、报道摘要或来自研判页的综合结论..."
                     rows={4}
                     style={{ ...inputStyle() as React.CSSProperties, resize: 'vertical' as const }}
                   />
                 </div>
                 <div>
-                  <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>推演目标</label>
+                  <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>预测目标</label>
                   <textarea
                     value={config.simulation_requirement}
                     onChange={e => setConfig(p => ({ ...p, simulation_requirement: e.target.value }))}
-                    placeholder="例如：推演未来72小时内，关键参与方在舆情与行动层面的演化路径。"
+                    placeholder="例如：预测未来72小时内，关键参与方在舆情与行动层面的演化路径。"
                     rows={3}
                     style={{ ...inputStyle() as React.CSSProperties, resize: 'vertical' as const }}
                   />
@@ -985,7 +1429,7 @@ export default function SimulationPage() {
                 </div>
                 <button type="submit" className="btn btn-primary" disabled={creating}
                   style={{ width: '100%', justifyContent: 'center' }}>
-                  {creating ? <><div className="spinner-sm" /> 创建中...</> : <><PlayIcon /> 创建推演记录</>}
+                  {creating ? <><div className="spinner-sm" /> 创建中...</> : <><PlayIcon /> 创建预测记录</>}
                 </button>
               </form>
             </div>
@@ -995,7 +1439,7 @@ export default function SimulationPage() {
           {selectedRun && (
             <div className="panel">
               <div className="panel-header">
-                <span className="panel-title">Step 2 / Step 3 控制台</span>
+                <span className="panel-title">Step 2 / Step 3 预测控制台</span>
                 {statusBadge(selectedRun.status)}
               </div>
               <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
@@ -1006,20 +1450,25 @@ export default function SimulationPage() {
                   onClick={() => handleStart(selectedRun.run_id)}
                   disabled={!selectedRun || selectedRun.status === 'running' || selectedRun.status === 'completed' || startingRun}
                   style={{ width: '100%', justifyContent: 'center' }}>
-                  <PlayIcon /> {startingRun ? '启动中...' : '开始仿真'}
+                  <PlayIcon /> {startingRun ? '启动中...' : '启动预测'}
                 </button>
                 <button className="btn btn-secondary btn-sm"
                   onClick={() => handleStop(selectedRun.run_id)}
                   disabled={!selectedRun || selectedRun.status !== 'running' || stoppingRun}
                   style={{ width: '100%', justifyContent: 'center' }}>
-                  <StopIcon /> {stoppingRun ? '停止中...' : '停止仿真'}
+                  <StopIcon /> {stoppingRun ? '停止中...' : '停止预测'}
                 </button>
                 <button className="btn btn-ghost btn-sm"
                   onClick={() => setShowReport(true)}
                   disabled={!selectedRun || selectedRun.status !== 'completed'}
                   style={{ width: '100%', justifyContent: 'center' }}>
-                  <FileIcon /> 查看报告
+                  <FileIcon /> {hasCountryContext ? `查看 ${draftCountryName} 报告` : '查看预测报告'}
                 </button>
+                {hasCountryContext && (
+                  <div style={{ fontSize: '0.64rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', textAlign: 'center', lineHeight: 1.5 }}>
+                    报告将继续沿着 {draftCountryName} 的观察包展开。
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1037,33 +1486,82 @@ export default function SimulationPage() {
             </div>
           )}
         </div>
+        )}
 
         {/* ── Center: Knowledge Graph — 最大展示 ────────────────────── */}
+        {centerPaneVisible && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)', alignItems: 'stretch' }}>
           <div>
             {/* Section header */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.06em', fontFamily: 'var(--font-mono)' }}>
-                关系图谱
-              </span>
-              <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
-              {selectedRun && (
-                <span style={{ fontSize: '0.65rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>
-                  {selectedRun.status === 'running' && <><PulseDot /> 运行中 · </>}
-                  {selectedRun.final_states?.length ?? 0} 个代理体
+            {viewMode !== 'graph' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.06em', fontFamily: 'var(--font-mono)' }}>
+                  未来关系图谱
                 </span>
-              )}
-            </div>
+                <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+                {selectedRun && (
+                  <span style={{ fontSize: '0.65rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>
+                    {selectedRun.status === 'running' && <><PulseDot /> 实时生成中 · </>}
+                    {(graphData?.nodes?.length ?? 0)} 个节点 / {(graphData?.edges?.length ?? 0)} 条关系
+                  </span>
+                )}
+                {selectedRun ? (
+                  <button className="btn btn-secondary btn-sm" onClick={() => setViewMode('graph')}>
+                    进入图谱主视图
+                  </button>
+                ) : null}
+              </div>
+            )}
+            {hasCountryContext && viewMode !== 'graph' && (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                marginBottom: 10,
+                padding: '8px 12px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid rgba(37,99,235,0.12)',
+                background: 'linear-gradient(135deg, rgba(37,99,235,0.06), rgba(255,255,255,0.96))',
+                flexWrap: 'wrap',
+              }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 2 }}>
+                    图谱来源
+                  </div>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                    {draftCountryName} 观察包
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end', fontSize: '0.66rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                  <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)' }}>
+                    风险 {draftCountryContext?.level ? draftCountryContext.level.toUpperCase() : 'UNKNOWN'}
+                  </span>
+                  <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)' }}>
+                    最新活动 {draftCountryContext?.latest_activity
+                      ? new Date(draftCountryContext.latest_activity).toLocaleString('zh-CN', { hour12: false })
+                      : '暂无最新活动'}
+                  </span>
+                </div>
+              </div>
+            )}
             <div style={{
-              height: 640,
+              height: viewMode === 'graph' ? 'calc(100vh - 148px)' : 760,
               background: 'var(--bg-surface)',
               border: '1px solid var(--border)',
-              borderRadius: 'var(--radius)',
+              borderRadius: viewMode === 'graph' ? '20px' : 'var(--radius)',
               overflow: 'hidden',
               boxShadow: 'var(--shadow-sm)',
             }}>
               {selectedRun ? (
-                <GraphPanel graphData={graphData ?? undefined} loading={graphLoading} />
+                <GraphPanel
+                  graphData={graphData ?? undefined}
+                  loading={graphLoading}
+                  onRefresh={() => setGraphRefreshKey(value => value + 1)}
+                  isSimulating={selectedRun.status === 'running'}
+                  onToggleMaximize={() => setViewMode(viewMode === 'graph' ? 'split' : 'graph')}
+                  isFullscreen={viewMode === 'graph'}
+                />
               ) : (
                 <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 'var(--sp-4)' }}>
                   <svg viewBox="0 0 80 80" fill="none" stroke="var(--accent-dim)" strokeWidth="1.5" width="80" height="80">
@@ -1082,10 +1580,10 @@ export default function SimulationPage() {
                   </svg>
                   <div style={{ textAlign: 'center' }}>
                     <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: 4 }}>
-                      选择一条推演记录
+                      选择一条预测记录
                     </div>
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                      关系图谱将在此中央展示
+                      未来关系图谱将在此中央展示
                     </div>
                   </div>
                 </div>
@@ -1093,9 +1591,114 @@ export default function SimulationPage() {
             </div>
           </div>
         </div>
+        )}
 
         {/* ── Right: Platform Status + Simulation Details ───────────── */}
+        {rightPaneVisible && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)', alignItems: 'stretch' }}>
+          {viewMode === 'workbench' && (
+            <div style={{
+              padding: 'var(--sp-4)',
+              borderRadius: 'var(--radius)',
+              border: '1px solid rgba(37,99,235,0.12)',
+              background: 'linear-gradient(135deg, rgba(37,99,235,0.07), rgba(255,255,255,0.95))',
+              boxShadow: 'var(--shadow-sm)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 4 }}>
+                    工作台状态
+                  </div>
+                  <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                    当前处于工作台模式
+                  </div>
+                </div>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setViewMode('split')}>
+                  返回双栏
+                </button>
+              </div>
+              <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                图谱已退到后台，你可以先处理预测记录、平台态势与报告阅读；需要重新观察关系路径时，随时切回双栏或图谱主视图。
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                  节点 {(graphData?.nodes?.length ?? 0)}
+                </span>
+                <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                  关系 {(graphData?.edges?.length ?? 0)}
+                </span>
+                <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                  状态 {selectedRun ? getRunStatusLabel(selectedRun.status) : '未选择'}
+                </span>
+              </div>
+              <div style={{ marginTop: 10, fontSize: '0.7rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                建议先处理当前记录与平台态势，再回到图谱主视图核对证据、关系与动作路径。
+              </div>
+            </div>
+          )}
+
+          {hasCountryContext && (
+            <CountryWorkbenchCard
+              iso={draftCountryContext?.iso || 'GLOBAL'}
+              countryName={draftCountryName}
+              score={draftCountryContext?.score ?? 0}
+              level={draftCountryContext?.level}
+              newsCount={draftCountryContext?.news_count ?? 0}
+              signalCount={draftCountryContext?.signal_count ?? 0}
+              focalCount={draftCountryContext?.focal_count ?? 0}
+              latestActivity={draftCountryContext?.latest_activity ?? null}
+              narrative={draftCountryContext?.narrative || '这条未来预测直接继承了全球观测阶段的国家观察包。'}
+              topSignalTypes={draftCountryContext?.top_signal_types ?? []}
+              headlines={(draftCountryContext?.top_headlines ?? []).map((title, index) => ({
+                id: `${draftCountryContext?.iso ?? 'ctx'}-${index}`,
+                title,
+                publishedAt: draftCountryContext?.latest_activity ?? null,
+              }))}
+              highlight={selectedRun?.status === 'running'}
+              analysisLabel="查看预测来源"
+            />
+          )}
+
+          {selectedRun ? (
+            <div style={{
+              padding: 'var(--sp-4)',
+              borderRadius: 'var(--radius)',
+              border: '1px solid rgba(37,99,235,0.12)',
+              background: 'linear-gradient(135deg, rgba(37,99,235,0.06), rgba(255,255,255,0.96))',
+              boxShadow: 'var(--shadow-sm)',
+            }}>
+              <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 8 }}>
+                预测摘要
+              </div>
+              <div style={{ fontSize: '0.96rem', fontWeight: 800, color: 'var(--text-primary)', marginBottom: 6 }}>
+                {selectedRun.status === 'running'
+                  ? '未来路径正在展开'
+                  : selectedRun.status === 'completed'
+                    ? '未来预测已完成'
+                    : selectedRun.status === 'created'
+                      ? '预测记录已就绪'
+                      : '等待继续处理'}
+              </div>
+              <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                {selectedRun.status === 'running'
+                  ? `当前已推进 ${selectedRun.rounds_completed} / ${totalRounds} 轮，${estimateRemaining()}。`
+                  : selectedRun.status === 'completed'
+                    ? `${selectedRun.convergence_achieved ? '未来路径已趋稳' : '未来路径仍有波动'}，现在可以阅读报告并回看图谱。`
+                    : '先启动这条记录，再观察图谱、行动流和预测报告逐步成形。'}
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                  节点 {(graphData?.nodes?.length ?? 0)}
+                </span>
+                <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                  关系 {(graphData?.edges?.length ?? 0)}
+                </span>
+                <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                  状态 {getRunStatusLabel(selectedRun.status)}
+                </span>
+              </div>
+            </div>
+          ) : null}
 
           {/* Platform Status */}
           <div>
@@ -1120,7 +1723,7 @@ export default function SimulationPage() {
           {/* Simulation Details */}
           <div className="panel">
             <div className="panel-header">
-              <span className="panel-title">仿真详情</span>
+              <span className="panel-title">预测详情</span>
               {selectedRun && statusBadge(selectedRun.status)}
             </div>
             {!selectedRun ? (
@@ -1131,10 +1734,11 @@ export default function SimulationPage() {
                 {selectedRun.status === 'running' && (
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: 4 }}>
-                      <span>仿真进度</span>
-                      <span style={{ fontFamily: 'var(--font-mono)' }}>{selectedRun.rounds_completed} / {config.max_rounds}</span>
+                      <span>未来路径进度</span>
+                      <span style={{ fontFamily: 'var(--font-mono)' }}>{selectedRun.rounds_completed} / {totalRounds}</span>
                     </div>
                     <div className="progress-track"><div className="progress-fill" style={{ width: `${progress}%` }} /></div>
+                    <div style={{ marginTop: 6, fontSize: '0.68rem', color: 'var(--text-muted)' }}>{estimateRemaining()}</div>
                   </div>
                 )}
                 {/* Meta grid */}
@@ -1142,7 +1746,7 @@ export default function SimulationPage() {
                   {[
                     ['完成轮次', selectedRun.rounds_completed],
                     ['收敛', selectedRun.convergence_achieved ? <span style={{ color: 'var(--low)' }}>已收敛</span> : '—'],
-                    ['耗时', selectedRun.duration_ms ? `${(selectedRun.duration_ms / 1000).toFixed(1)}s` : '—'],
+                    ['时间估计', estimateRemaining()],
                   ].map(([label, value]) => (
                     <div key={label as string}>
                       <div style={{ color: 'var(--text-muted)', marginBottom: 2, fontSize: '0.62rem', letterSpacing: '0.04em' }}>{label}</div>
@@ -1153,16 +1757,18 @@ export default function SimulationPage() {
                 {/* Agent table */}
                 {selectedRun.final_states && selectedRun.final_states.length > 0 && (
                   <div>
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 6, letterSpacing: '0.04em' }}>
-                      代理体 ({selectedRun.final_states.length})
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 6, letterSpacing: '0.04em' }}>
+                      关键观察角色 ({selectedRun.final_states.length})
                     </div>
                     <div style={{ maxHeight: 200, overflowY: 'auto', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
                       <table className="data-table" style={{ fontSize: '0.68rem' }}>
-                        <thead><tr><th>ID</th><th>信念</th><th>影响</th></tr></thead>
+                        <thead><tr><th>角色</th><th>信念</th><th>影响</th></tr></thead>
                         <tbody>
-                          {selectedRun.final_states.slice(0, 15).map(agent => (
+                          {selectedRun.final_states.slice(0, 15).map((agent, index) => (
                             <tr key={agent.id}>
-                              <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.62rem', color: 'var(--accent)' }}>{agent.id.slice(0, 8)}</td>
+                              <td style={{ fontSize: '0.66rem', color: 'var(--text-primary)', fontWeight: 600 }}>
+                                {formatFutureRoleName(agent.id, index)}
+                              </td>
                               <td style={{ color: agent.belief > 0.7 ? 'var(--critical)' : agent.belief < 0.3 ? 'var(--low)' : 'inherit' }}>
                                 {agent.belief.toFixed(2)}
                               </td>
@@ -1183,9 +1789,9 @@ export default function SimulationPage() {
                   <div style={{ padding: 'var(--sp-3)', background: 'var(--low-d)', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(68,255,136,0.15)', display: 'flex', alignItems: 'center', gap: 8 }}>
                     <CheckIcon />
                     <div>
-                      <div style={{ fontWeight: 600, color: 'var(--low)', fontSize: '0.78rem' }}>推演已完成</div>
+                      <div style={{ fontWeight: 600, color: 'var(--low)', fontSize: '0.78rem' }}>预测已完成</div>
                       <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-                        {selectedRun.convergence_achieved ? '已达均衡收敛' : '未达收敛'}
+                        {selectedRun.convergence_achieved ? '未来路径已趋稳' : '未来路径仍存在波动'}
                       </div>
                     </div>
                   </div>
@@ -1194,14 +1800,22 @@ export default function SimulationPage() {
             )}
           </div>
         </div>
+        )}
       </div>
 
       {/* Report Viewer Drawer */}
       {showReport && selectedRun && (
-        <ReportViewer runId={selectedRun.run_id} onClose={() => setShowReport(false)} />
+        <ReportViewer runId={selectedRun.run_id} onClose={() => setShowReport(false)} countryContext={draftCountryContext} />
       )}
     </div>
   )
+}
+
+function formatFutureRoleName(id: string, index: number) {
+  if (!id) return `观察角色 ${index + 1}`
+  if (id.includes('agent_tw')) return `信息广场角色 ${index + 1}`
+  if (id.includes('agent_rd')) return `话题社区角色 ${index + 1}`
+  return `观察角色 ${index + 1}`
 }
 
 /* ── Icons ─────────────────────────────────────────────────────────────────── */

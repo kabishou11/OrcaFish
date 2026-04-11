@@ -1,6 +1,6 @@
-# OrcaFish — 统一情报系统
+# OrcaFish
 
-> 融合**地缘情报监测**、**舆情分析**、**群体智能仿真**的统一情报系统
+> 面向地缘风险与舆情推演的统一工作台，主链路为 `全球观测 -> 议题研判 -> 未来预测 -> 自动流程`
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5+-3178C6.svg)](https://www.typescriptlang.org/)
@@ -9,303 +9,561 @@
 
 ---
 
-## 项目概述
+## 1. 项目定位
 
-OrcaFish 旨在构建一个多层次、多源融合的统一情报分析平台，系统分为三大核心模块：
+OrcaFish 不是单点页面集合，而是一条可连续演示、可连续操作的风险工作流：
 
-| 模块 | 描述 |
-|------|------|
-| **情报监测 (Intelligence)** | 全球地缘信号的实时采集、汇聚与危机强度指数 (CII) 计算 |
-| **舆情分析 (Analysis)** | 多源舆情聚合、情感分析、实体抽取、议题检测与综合报告生成 |
-| **仿真预测 (Simulation)** | 基于 CAMEL-OASIS 的群体智能代理网络仿真，情景推演与预测 |
+- `全球观测`：持续接收热点国家、新闻摘要、Agent 观察焦点与风险排行
+- `议题研判`：多代理并行生成搜索流、媒体流、洞察流与综合结论
+- `未来预测`：把议题或国家观察包送入预测工作台，生成关系图谱、行动流与预测报告
+- `自动流程`：把观测、研判、预测串成一条统一编排链路
 
----
+当前版本已经吸收并融合了你提供的几个项目方向，尤其参考了：
 
-## 系统架构
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Frontend (React + Vite)             │
-│   Dashboard │ Intelligence │ Analysis │ Simulation          │
-└──────────────────────────┬──────────────────────────────────┘
-                           │  REST API + WebSocket /ws
-┌──────────────────────────▼──────────────────────────────────┐
-│                     Backend (FastAPI)                       │
-│                                                          │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │ Intelligence │  │   Analysis    │  │   Simulation     │  │
-│  │  Router       │  │   Router      │  │   Router          │  │
-│  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘  │
-│         │                 │                    │            │
-│  ┌──────▼─────────────────▼────────────────────▼─────────┐ │
-│  │              LLM Client Layer                          │ │
-│  │  QueryLLM (DeepSeek)  MediaLLM (Gemini)                │ │
-│  │  InsightLLM (Kimi)    ReportLLM (Gemini)               │ │
-│  └─────────────────────────────────────────────────────────┘ │
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │              Intelligence Engine                        │  │
-│  │  CII Engine │ Signal Aggregator │ World Monitor         │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │              Simulation Engine                          │  │
-│  │  GraphBuilder (Zep) │ OASISRunner │ ReportAgent         │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │              Pipeline Orchestrator                      │  │
-│  │  AcledCollector │ UcdpCollector │ etc.                  │  │
-│  └────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────┘
-                           │
-          ┌────────────────┼────────────────┐
-          ▼                ▼                 ▼
-    Acled API         Upstash Redis     Zep Cloud
-    UCDP API          Tavily API        OASIS
-    FlightRadar       BettaFish DB
-```
+- `F:\1work\OrcFish\MiroFish`
+- `F:\3work\1风险预测\MiroFish`
+- `F:\1work\OrcFish\BettaFish`
+- `F:\1work\OrcFish\worldmonitor`
+- 本地 `zep-local / graphiti`
 
 ---
 
-## 目录结构
+## 2. 当前能力
 
+### 2.1 全球观测
+
+- 使用平面世界地图，不再依赖 3D 旋转地球
+- 可持续轮询实时新闻、信号、Agent 焦点
+- 内置多国家 fallback 数据，即使外部抓取受限也能保持页面连续刷新
+- 国家工作台支持一键送去议题研判或未来预测
+
+### 2.2 议题研判
+
+- 多代理并行：搜索、媒体、洞察、报告编排
+- 支持分段输出，不再等整份报告一次性返回
+- 结果流支持 Markdown 渲染
+- 已补充阶段事件、监控底稿接入、降级态提示和质量状态
+
+### 2.3 未来预测
+
+- `graph / split / workbench` 三种工作台模式
+- 关系图谱支持关系线、关系说明、节点检查器、关系检查器
+- 支持关系过滤与“仅当前路径”
+- 图谱优先读取本地 `zep-local / graphiti` 内容，远端不可用时回退本地快照与动作层补图
+
+### 2.4 自动流程
+
+- 观测 -> 研判 -> 预测 的链路已打通
+- 首页、全球观测、议题研判都可以把上下文包直接送入未来预测
+
+---
+
+## 3. 技术架构
+
+```text
+Frontend (React + Vite)
+  ├─ Dashboard
+  ├─ Intelligence
+  ├─ Analysis
+  ├─ Simulation
+  └─ Pipeline
+
+Backend (FastAPI)
+  ├─ /api/intelligence
+  ├─ /api/analysis
+  ├─ /api/simulation
+  ├─ /api/pipeline
+  ├─ LLM Client (MiniMax / ModelScope / OpenAI-compatible)
+  ├─ Signal Aggregator / CII Engine
+  ├─ GraphBuilder / SnapshotStore / OASISRunner
+  └─ Report Agents
+
+Optional local services
+  ├─ Zep CE        http://localhost:8000
+  ├─ Graphiti      http://localhost:8003
+  └─ Crawl4AI      http://localhost:11235
 ```
+
+---
+
+## 4. 目录结构
+
+```text
 orcafish/
-├── backend/
-│   ├── __init__.py
-│   ├── main.py                  # FastAPI 应用入口
-│   ├── config.py                # Pydantic 配置管理
-│   ├── api/
-│   │   └── routes/
-│   │       ├── intelligence.py   # CII / 信号路由
-│   │       ├── analysis.py       # 舆情分析路由
-│   │       ├── simulation.py     # 仿真路由
-│   │       └── pipeline.py       # 流水线路由
-│   ├── llm/                      # 多 Provider LLM 客户端
-│   ├── intelligence/              # CII 计算 / 信号汇聚 / World Monitor
-│   ├── analysis/                  # QueryAgent / MediaAgent / InsightAgent / ReportAgent
-│   ├── simulation/               # OntologyGenerator / GraphBuilder / OASISRunner
-│   ├── pipeline/                 # 数据采集器 / Orchestrator
-│   └── models/                   # Pydantic 数据模型
-├── frontend/
-│   ├── src/
-│   │   ├── App.tsx               # 路由与布局
-│   │   ├── main.tsx              # React 入口
-│   │   ├── index.css             # 全局样式 (CSS Variables, Dark Mode)
-│   │   └── components/
-│   │       ├── Dashboard/         # 首页仪表板
-│   │       ├── Intelligence/      # 情报监测页面
-│   │       ├── Analysis/          # 舆情分析页面
-│   │       └── Simulation/        # 仿真预测页面
-│   ├── package.json
-│   ├── vite.config.ts
-│   ├── tsconfig.json
-│   └── index.html
-├── requirements.txt
-└── .env.example
+├─ backend/
+│  ├─ main.py
+│  ├─ config.py
+│  ├─ api/routes/
+│  │  ├─ intelligence.py
+│  │  ├─ analysis.py
+│  │  ├─ simulation.py
+│  │  └─ pipeline.py
+│  ├─ graph/
+│  │  ├─ graph_builder.py
+│  │  └─ snapshot_store.py
+│  ├─ intelligence/
+│  ├─ analysis/
+│  ├─ simulation/
+│  ├─ llm/
+│  └─ models/
+├─ frontend/
+│  ├─ package.json
+│  ├─ vite.config.ts
+│  └─ src/
+│     ├─ App.tsx
+│     ├─ stores/
+│     └─ components/
+├─ tests/
+│  └─ test_backend_smoke.py
+├─ docs/
+│  └─ DEPLOYMENT.md
+├─ .env.example
+└─ README.md
 ```
 
 ---
 
-## 快速开始
+## 5. 环境要求
 
-更详细的部署、启动、排障说明见 [docs/DEPLOYMENT.md](F:/1work/OrcFish/orcafish/docs/DEPLOYMENT.md)。
+### 5.1 必需
 
-### 1. 安装依赖
+- Windows 10/11、Linux 或 macOS
+- Python `3.11+`
+- Node.js `18+`
+- `pnpm`
 
-```bash
-# 后端虚拟环境
+### 5.2 推荐
+
+- 项目内虚拟环境 `.venv`
+- Docker Desktop 或你自己的本地 `zep-local`
+- 一组可用的 LLM Key
+
+### 5.3 可选外部能力
+
+- `MiniMax`
+- `ModelScope`
+- `Zep CE + Graphiti`
+- `crawl4ai`
+- `Upstash Redis`
+
+---
+
+## 6. 安装步骤
+
+### 6.1 克隆并进入项目
+
+```powershell
+cd F:\1work\OrcFish
+git clone <your-repo-url> orcafish
+cd orcafish
+```
+
+### 6.2 创建后端虚拟环境
+
+```powershell
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-
-# 安装后端依赖
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+```
 
-# 安装前端依赖
+### 6.3 安装前端依赖
+
+```powershell
 cd frontend
 pnpm install
+cd ..
 ```
 
-### 2. 配置环境变量
+---
 
-```bash
-cp .env.example .env
-# 编辑 .env 填入 API Keys
+## 7. 环境变量配置
+
+### 7.1 从模板复制
+
+```powershell
+Copy-Item .env.example .env
 ```
 
-关键变量说明（今晚演示至少保证一组可用 LLM Key）：
+### 7.2 当前推荐模型方案
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `APP_HOST` | 后端监听地址 | `0.0.0.0` |
-| `APP_PORT` | 后端监听端口 | `8080` |
-| `MODELSCOPE_API_KEY` | ModelScope Token（当前默认 Provider） | — |
-| `MINIMAX_API_KEY` | MiniMax API Key（可选） | — |
-| `QUERY_LLM_API_KEY` | Query Agent API Key | — |
-| `REPORT_LLM_API_KEY` | Report Agent API Key | — |
-| `QUERY_LLM_PROVIDER` | Query Agent Provider，可设为 `modelscope`/`minimax` 等 | `modelscope` |
-| `QUERY_LLM_REASONING_SPLIT` | 是否开启 reasoning_details 分离 | `false` |
-| `ZEP_API_KEY` | Zep API Key（可选） | — |
-| `ZEP_BASE_URL` | 本地 Zep CE 地址 | `http://localhost:8000` |
-| `ZEP_API_SECRET` | 本地 Zep CE Secret（可选） | — |
-| `CRAWL4AI_BASE_URL` | Crawl4AI 服务地址 | `http://localhost:11235` |
-| `CRAWL4AI_TOKEN` | Crawl4AI Token（如启用鉴权） | — |
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis URL（信号缓存） | — |
-| `ACLED_ACCESS_TOKEN` | Acled 冲突数据 API Token | — |
-| `UCDP_ACCESS_TOKEN` | UCDP 武装冲突数据 API Token | — |
-| `TAVILY_API_KEY` | Tavily 搜索 API Key | — |
-| `CII_THRESHOLD` | CII 触发告警阈值 | `65.0` |
-| `SIMULATION_ROUNDS` | 仿真默认轮次 | `40` |
+当前项目建议：
 
-### 3. 启动后端
+1. `MiniMax` 作为首选
+2. `ModelScope` 作为回退
 
-```bash
-# 稳定启动方式（推荐）
-python -m backend.main
-
-# 或直接
-uvicorn backend.main:app --reload --port 8080
-```
-
-### 4. 启动前端
-
-```bash
-cd frontend
-pnpm dev
-# 访问 http://localhost:3000
-```
-
-### 5. 可选本地依赖
-
-- `Zep CE`：默认会尝试连接 `http://localhost:8000`，若 Docker 可用，后端启动时会尝试自动拉起本地 `zep/legacy/docker-compose.ce.yaml`
-- `crawl4ai`：后端启动时会检查当前 `.venv` 是否已安装；若未安装，会尝试自动安装并在失败时降级
-- 缺少以上依赖时，系统仍可进入前端并完成部分演示，但知识图谱与正文抓取会降级
-
-### 6. MiniMax 可选模型
-
-当前后端已支持把任意一个 Agent 切到 MiniMax 的 OpenAI 兼容接口。最小配置示例：
+下面是一套推荐配置骨架，注意不要把真实密钥提交进仓库。
 
 ```env
+APP_HOST=0.0.0.0
+APP_PORT=8080
+
 MINIMAX_API_KEY=your-minimax-api-key
+MODELSCOPE_API_KEY=your-modelscope-api-key
 
 QUERY_LLM_PROVIDER=minimax
 QUERY_LLM_API_KEY=${MINIMAX_API_KEY}
 QUERY_LLM_BASE_URL=https://api.minimaxi.com/v1
 QUERY_LLM_MODEL=MiniMax-M2.7
 QUERY_LLM_REASONING_SPLIT=true
-```
 
-如果你希望 `Media / Insight / Report` 也切到 MiniMax，同样把对应的 `*_LLM_PROVIDER`、`*_LLM_API_KEY`、`*_LLM_BASE_URL`、`*_LLM_MODEL` 改掉即可。
+MEDIA_LLM_PROVIDER=minimax
+MEDIA_LLM_API_KEY=${MINIMAX_API_KEY}
+MEDIA_LLM_BASE_URL=https://api.minimaxi.com/v1
+MEDIA_LLM_MODEL=MiniMax-M2.7
+MEDIA_LLM_REASONING_SPLIT=true
+
+INSIGHT_LLM_PROVIDER=minimax
+INSIGHT_LLM_API_KEY=${MINIMAX_API_KEY}
+INSIGHT_LLM_BASE_URL=https://api.minimaxi.com/v1
+INSIGHT_LLM_MODEL=MiniMax-M2.7
+INSIGHT_LLM_REASONING_SPLIT=true
+
+REPORT_LLM_PROVIDER=minimax
+REPORT_LLM_API_KEY=${MINIMAX_API_KEY}
+REPORT_LLM_BASE_URL=https://api.minimaxi.com/v1
+REPORT_LLM_MODEL=MiniMax-M2.7
+REPORT_LLM_REASONING_SPLIT=true
+
+FALLBACK_LLM_PROVIDER=modelscope
+FALLBACK_LLM_API_KEY=${MODELSCOPE_API_KEY}
+FALLBACK_LLM_BASE_URL=https://api-inference.modelscope.cn/v1
+FALLBACK_LLM_MODEL=Qwen/Qwen3.5-32B-Instruct
+```
 
 说明：
 
-- `*_REASONING_SPLIT=true` 时，客户端会透传 `extra_body={"reasoning_split": true}`
-- 密钥不要写死进仓库，只放在 `.env` 或部署平台的 Secret 中
-- 你刚才贴出来的那把 MiniMax Key 已经属于泄露态，建议交付后立刻轮换
+- 当前代码支持扁平变量名，不需要写成嵌套配置
+- `*_REASONING_SPLIT=true` 会透传 `extra_body={"reasoning_split": true}`
+- 如果某个代理不想用 MiniMax，可以单独切回 ModelScope
 
-## 今晚演示最短路径
+### 7.3 图谱相关变量
 
-1. 启动后端，确认 [http://localhost:8080/health](http://localhost:8080/health) 返回 `status=healthy`
-2. 启动前端，打开 [http://localhost:3000](http://localhost:3000)
-3. 首页从“全球观测 → 议题研判 → 未来推演 → 自动流程”进入
-4. 在“议题研判”页输入一个议题，等待 HTML 报告生成
-5. 点击“送入未来推演”，让分析结果预填到推演工作台
-6. 在“未来推演”页先创建记录，再手动点击启动，最后查看图谱、行动流和报告
+```env
+ZEP_BASE_URL=http://localhost:8000
+GRAPHITI_BASE_URL=http://localhost:8003
+ZEP_API_SECRET=
+```
 
-推荐演示议题：
+### 7.4 Crawl4AI 可选配置
 
-- 台湾海峡局势升级后的舆论演化
-- 南海擦枪走火与周边国家反应
-- 中东局势升级下的全球能源与舆情链式影响
-
----
-
-## 核心模块说明
-
-### Intelligence — 情报监测
-
-- **CII Engine**：计算国家危机强度指数，综合军事异常、冲突事件、社会动荡等多维信号
-- **Signal Aggregator**：汇聚 Acled、UCDP、FlightRadar24、 VesselFinder 等多源信号，按国家聚类
-- **World Monitor**：定时轮询外部数据源，检测信号汇聚，当 CII > 阈值且汇聚信号 >= 3 时触发告警
-
-### Analysis — 舆情分析
-
-- **QueryAgent**：使用 DeepSeek 搜索相关报道与文献
-- **MediaAgent**：使用 Gemini 分析媒体内容情感与主题
-- **InsightAgent**：使用 Kimi 生成深层洞察
-- **ReportAgent**：使用 Gemini 生成 HTML 综合报告
-
-### Simulation — 仿真预测
-
-- **GraphBuilder**：使用 Zep Cloud 构建知识图谱ontology
-- **OASISRunner**：基于 CAMEL-OASIS 运行群体智能代理仿真
-- **SimulationIPC**：仿真进程间通信，支持"上帝模式"变量注入
-- **ReportAgent**：基于仿真结果生成情景推演报告
-
-### Pipeline — 数据流水线
-
-- **Orchestrator**：统一调度多源数据采集任务（ACLED、UCDP、Tavily、BettaFish DB）
-- **TriggerEngine**：基于信号汇聚条件触发舆情分析或仿真任务
-
----
-
-## API 路由概览
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/health` | 健康检查 |
-| WS | `/ws` | 实时事件流 |
-| GET | `/api/intelligence/cii` | 获取所有国家 CII 指数 |
-| GET | `/api/intelligence/cii/{iso}` | 获取指定国家 CII |
-| GET | `/api/intelligence/signals` | 获取信号汇聚 |
-| POST | `/api/intelligence/ingest` | 外部信号接入 |
-| POST | `/api/analysis/trigger` | 发起舆情分析 |
-| GET | `/api/analysis/{task_id}` | 查询分析状态 |
-| GET | `/api/intelligence/world-monitor/status` | 世界监测器状态 |
-| POST | `/api/analysis/trigger` | 发起议题研判 |
-| GET | `/api/analysis/{task_id}` | 查询研判结果 |
-| GET | `/api/simulation/runs` | 获取推演运行列表 |
-| POST | `/api/simulation/runs` | 创建推演记录（不自动启动） |
-| POST | `/api/simulation/runs/{run_id}/start` | 启动推演 |
-| GET | `/api/simulation/runs/{run_id}/status` | 查询推演状态 |
-| GET | `/api/simulation/runs/{run_id}/detail` | 获取推演详情与行动流 |
-| GET | `/api/simulation/runs/{run_id}/graph` | 获取推演知识图谱 |
-| GET | `/api/simulation/report/{run_id}` | 获取推演报告 HTML |
-| GET | `/api/pipeline/` | 流水线状态 |
-
----
-
-## 开发说明
-
-### 代码规范
-
-- **Python**: PEP 8，使用 `loguru` 记录日志
-- **TypeScript**: 严格模式，禁止 `any` 逃逸
-- **API**: RESTful，错误返回标准 HTTP 状态码
-
-### 注意事项
-
-- 首次运行建议至少配置 `MODELSCOPE_API_KEY` 与 `QUERY_LLM_API_KEY`
-- 当前配置系统已兼容 `.env.example` 里的扁平变量名，不需要改成嵌套格式
-- `Zep` 与 `crawl4ai` 已按本地集成思路接入，但缺失时会进入降级模式，不阻塞页面演示
-- 推演链路已调整为“先创建，再启动”，更贴近 `MiroFish` 工作台操作方式
-- “议题研判 → 送入未来推演” 是今晚最重要的主链，演示时优先走这条路径
-- 前端 Vite 开发服务器已配置 API 和 WebSocket 代理到后端 `8080`
-
-### 快速验证
-
-```bash
-# 后端接口烟雾测试
-.venv\Scripts\python.exe tests\test_backend_smoke.py
-
-# 前端生产构建检查
-cd frontend
-pnpm build
+```env
+CRAWL4AI_BASE_URL=http://localhost:11235
+CRAWL4AI_TOKEN=
 ```
 
 ---
 
-## License
+## 8. 本地依赖服务
 
-MIT
+### 8.1 方案 A：直接复用你现成的 `zep-local`
+
+如果你已经有本地 `zep-local`，例如：
+
+- `F:\3work\1风险预测\zep-local`
+
+优先直接复用，不建议重复再起一套。
+
+你只需要确认：
+
+1. `ZEP_BASE_URL=http://localhost:8000`
+2. `GRAPHITI_BASE_URL=http://localhost:8003`
+3. `ZEP_API_SECRET` 与本地配置一致
+
+### 8.2 方案 B：使用仓库自带 compose
+
+仓库中保留了参考编排：
+
+- `zep/legacy/docker-compose.ce.yaml`
+
+它用于启动：
+
+- `zep`
+- `graphiti`
+- `postgres`
+- `neo4j`
+
+如果你走这一套，需要先补齐 `zep/legacy` 下的环境变量文件，再执行 `docker compose up -d`。
+
+### 8.3 本地服务健康检查
+
+```powershell
+Test-NetConnection localhost -Port 8000
+Test-NetConnection localhost -Port 8003
+Invoke-WebRequest http://localhost:8003/healthcheck
+```
+
+---
+
+## 9. 启动方式
+
+### 9.1 启动后端
+
+推荐稳定方式：
+
+```powershell
+cd F:\1work\OrcFish\orcafish
+.venv\Scripts\python.exe -m backend.main
+```
+
+如需热重载：
+
+```powershell
+.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8080
+```
+
+启动后检查：
+
+```powershell
+Invoke-WebRequest http://localhost:8080/health
+```
+
+### 9.2 启动前端
+
+```powershell
+cd F:\1work\OrcFish\orcafish\frontend
+pnpm dev
+```
+
+默认访问地址通常为：
+
+- [http://127.0.0.1:5173](http://127.0.0.1:5173)
+
+如果 Vite 输出了别的地址，以终端输出为准。
+
+### 9.3 前后端同时启动的推荐顺序
+
+1. 先启动 `zep-local / graphiti`
+2. 再启动后端
+3. 最后启动前端
+
+---
+
+## 10. 首次联调检查清单
+
+### 10.1 后端健康检查
+
+```powershell
+Invoke-WebRequest http://localhost:8080/health
+```
+
+期望：
+
+- `status=healthy`
+- 如果本地图谱服务已接入，相关健康信息应显示运行中
+
+### 10.2 后端烟雾测试
+
+```powershell
+cd F:\1work\OrcFish\orcafish
+.venv\Scripts\python.exe tests\test_backend_smoke.py
+```
+
+成功标志：
+
+- 输出 `backend-smoke-ok`
+
+### 10.3 前端构建检查
+
+```powershell
+cd F:\1work\OrcFish\orcafish\frontend
+pnpm build
+```
+
+说明：
+
+- 当前大图相关 chunk 仍偏大
+- 这不影响今晚演示与部署
+
+---
+
+## 11. 推荐演示路径
+
+### 11.1 最短闭环
+
+1. 打开首页 `预测总览`
+2. 进入 `全球观测`
+3. 选择一个国家或热点事件
+4. 点 `送去议题研判`
+5. 在 `议题研判` 看四段结果逐步到达
+6. 点 `送入未来预测`
+7. 在 `未来预测` 先创建记录，再启动预测
+8. 展示图谱、行动流、预测详情与报告
+
+### 11.2 推荐演示议题
+
+- `台海局势升级后的舆论演化`
+- `中东局势升级下的全球能源与舆情链式影响`
+- `南海争端升温后的区域安全与传播路径`
+
+---
+
+## 12. 生产或演示部署建议
+
+### 12.1 单机演示部署
+
+这是今晚最稳的方案。
+
+同一台机器上运行：
+
+- `zep-local / graphiti`
+- `backend.main`
+- `frontend` 开发服务或构建产物预览
+
+建议端口：
+
+- 前端：`5173`
+- 后端：`8080`
+- Zep：`8000`
+- Graphiti：`8003`
+
+### 12.2 前后端分离部署
+
+如果你要拆开部署：
+
+- 前端打包后放静态站点或 Nginx
+- 后端独立运行 FastAPI
+- 前端通过反向代理或环境变量把 `/api` 指到后端
+- `zep-local / graphiti` 仍建议与后端处于同一内网
+
+### 12.3 Windows 演示环境建议
+
+建议开三个窗口：
+
+1. `zep-local`
+2. `backend.main`
+3. `frontend pnpm dev`
+
+如果你要更稳一点，可以考虑用：
+
+- NSSM
+- PM2
+- Task Scheduler
+
+把后端和前端挂成长期进程。
+
+---
+
+## 13. 关键接口
+
+### 13.1 全球观测
+
+- `GET /api/intelligence/cii`
+- `GET /api/intelligence/signals`
+- `GET /api/intelligence/news`
+- `GET /api/intelligence/focal-points`
+- `GET /api/intelligence/country-context/{iso}`
+
+### 13.2 议题研判
+
+- `POST /api/analysis/trigger`
+- `GET /api/analysis/{task_id}`
+
+### 13.3 未来预测
+
+- `GET /api/simulation/runs`
+- `POST /api/simulation/runs`
+- `POST /api/simulation/runs/{run_id}/start`
+- `POST /api/simulation/runs/{run_id}/stop`
+- `GET /api/simulation/runs/{run_id}/status`
+- `GET /api/simulation/runs/{run_id}/detail`
+- `GET /api/simulation/runs/{run_id}/graph`
+- `GET /api/simulation/report/{run_id}`
+
+---
+
+## 14. 常见问题
+
+### 14.1 前端 `pnpm dev` 报 `spawn EPERM`
+
+这通常不是项目代码错误，而是当前环境对 `esbuild` 子进程有限制。
+
+可尝试：
+
+1. 提权启动终端
+2. 使用本机正常 PowerShell 或 CMD
+3. 先执行 `pnpm build`，确认代码本身无误
+
+### 14.2 外部新闻抓取失败
+
+如果你看到类似：
+
+- `WinError 10013`
+- `Connection error`
+
+说明当前环境限制了对外访问。
+
+这时系统仍会：
+
+- 使用 fallback 新闻
+- 使用 fallback 信号
+- 使用本地监控底稿
+
+所以主链仍可演示，但“完全真实外部数据”会受限。
+
+### 14.3 MiniMax 连不上
+
+先检查：
+
+1. `MINIMAX_API_KEY` 是否有效
+2. `*_LLM_BASE_URL` 是否为 `https://api.minimaxi.com/v1`
+3. 本机是否能正常出网
+
+### 14.4 图谱有节点但关系很少
+
+优先检查：
+
+1. `zep-local / graphiti` 是否真的有数据
+2. `GRAPHITI_BASE_URL` 是否可达
+3. 当前预测记录是否已启动并生成 `actions.jsonl`
+
+说明：
+
+- 当前图谱策略是“远端图优先 + 本地快照兜底 + 动作层补图”
+- 远端不可用时仍能出图，但语义厚度会比完整图服务弱
+
+### 14.5 议题研判能跑，但质量一般
+
+这通常不是页面本身的问题，而是素材不足或外部调用受限。
+
+建议检查：
+
+1. 当前 query 是否过大或过泛
+2. 外部 LLM 是否可连通
+3. 当前是否落入 `degraded` 降级底稿模式
+
+---
+
+## 15. 开发与回归
+
+### 15.1 常用命令
+
+```powershell
+# 后端烟雾
+.venv\Scripts\python.exe tests\test_backend_smoke.py
+
+# 前端构建
+cd frontend
+pnpm build
+
+# 前端开发
+pnpm dev
+```
+
+### 15.2 推荐回归顺序
+
+1. 跑后端烟雾测试
+2. 跑前端构建
+3. 人工走查三页：
+   - `全球观测`
+   - `议题研判`
+   - `未来预测`
+4. 重点确认“送去研判”“送入未来预测”链路没断
+
+---
+
+## 16. 补充说明
+
+- 详细部署补充仍保留在 [docs/DEPLOYMENT.md](F:/1work/OrcFish/orcafish/docs/DEPLOYMENT.md)
+- 但本 README 现在已经包含完整安装、启动、部署、联调、排障主信息
+- 如果你今晚直接交付，优先按本 README 的“单机演示部署”执行即可
+

@@ -38,11 +38,14 @@ def _is_zep_ce_running() -> bool:
     base_url = settings.zep_base_url.rstrip("/")
     if not base_url:
         return False
-    try:
-        resp = httpx.get(f"{base_url}/health", timeout=3)
-        return resp.is_success
-    except Exception:
-        return False
+    for path in ("/healthz", "/health"):
+        try:
+            resp = httpx.get(f"{base_url}{path}", timeout=3)
+            if resp.is_success:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 async def _start_zep_ce() -> bool:

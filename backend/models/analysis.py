@@ -1,6 +1,6 @@
 """OrcaFish Analysis Models — Pydantic schemas for the analysis module."""
-from datetime import datetime
-from typing import Optional, List
+from datetime import UTC, datetime
+from typing import Optional, List, Dict, Literal
 from pydantic import BaseModel, Field
 
 
@@ -41,6 +41,44 @@ class AnalysisReport(BaseModel):
     sources_count: int = 0
 
 
+class AnalysisSectionState(BaseModel):
+    """Structured section state for stepwise rendering."""
+
+    key: str
+    title: str
+    order: int
+    status: Literal["queued", "running", "done", "fallback", "degraded"] = "queued"
+    summary: str = ""
+    content: str = ""
+    source_count: int = 0
+    fallback_used: bool = False
+    updated_at: Optional[datetime] = None
+
+
+class AnalysisTimelineEvent(BaseModel):
+    """One event in the analysis timeline."""
+
+    key: str
+    stage: str
+    title: str
+    detail: str
+    status: Literal["queued", "running", "done", "fallback", "warning", "failed"] = "queued"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class AnalysisAgentState(BaseModel):
+    """Per-agent structured progress."""
+
+    key: str
+    label: str
+    status: Literal["queued", "running", "done", "fallback", "failed"] = "queued"
+    progress: int = 0
+    source_count: int = 0
+    summary: str = ""
+    fallback_used: bool = False
+    updated_at: Optional[datetime] = None
+
+
 class AnalysisTask(BaseModel):
     """
     Full analysis task state.
@@ -56,6 +94,22 @@ class AnalysisTask(BaseModel):
     progress: int = Field(
         default=0, ge=0, le=100, description="Overall completion percentage"
     )
+    data_quality: str = Field(
+        default="unknown",
+        description="unknown | live | mixed | degraded",
+    )
+    degraded_reason: Optional[str] = None
+    ui_message: Optional[str] = None
+    fallback_used: bool = Field(default=False)
+    source_count: int = 0
+    matched_terms: List[str] = Field(default_factory=list)
+    sentiment_hint: Dict[str, int] = Field(default_factory=dict)
+    news_digest: List[dict] = Field(default_factory=list)
+    agent_status: Dict[str, str] = Field(default_factory=dict)
+    agent_metrics: Dict[str, AnalysisAgentState] = Field(default_factory=dict)
+    sections: List[AnalysisSectionState] = Field(default_factory=list)
+    timeline: List[AnalysisTimelineEvent] = Field(default_factory=list)
+    last_update_at: Optional[datetime] = None
     query_report: Optional[str] = Field(
         default=None, description="Markdown from QueryAgent"
     )
@@ -77,15 +131,19 @@ class AnalysisTask(BaseModel):
 
     def mark_running(self):
         self.status = "running"
+        self.last_update_at = datetime.now(UTC)
 
     def mark_assembling(self):
         self.status = "assembling"
+        self.last_update_at = datetime.now(UTC)
 
     def mark_completed(self):
         self.status = "completed"
         self.progress = 100
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(UTC)
+        self.last_update_at = self.completed_at
 
     def mark_failed(self, error: str):
         self.status = "failed"
         self.error = error
+        self.last_update_at = datetime.now(UTC)

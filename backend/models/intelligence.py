@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional
+from typing import Dict, List, Optional
 
 
 class ComponentScores(BaseModel):
@@ -35,17 +37,30 @@ class GeoSignal(BaseModel):
 
 class CountrySignalCluster(BaseModel):
     country_iso: str
-    signals: list[GeoSignal] = Field(default_factory=list)
+    signals: List[GeoSignal] = Field(default_factory=list)
     convergence_score: float = 0.0
-    signal_types: list[str] = Field(default_factory=list)
+    signal_types: List[str] = Field(default_factory=list)
     total_count: int = 0
 
 
 class RegionalConvergence(BaseModel):
     region: str
-    countries: list[str]
+    countries: List[str]
     convergence_score: float = 0.0
-    active_signal_types: list[str] = Field(default_factory=list)
+    active_signal_types: List[str] = Field(default_factory=list)
+
+
+class NewsBulletin(BaseModel):
+    id: str
+    title: str
+    summary: str = ""
+    source: str = ""
+    url: str = ""
+    country_iso: str = ""
+    signal_type: str = "diplomatic"
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    published_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class FocalPoint(BaseModel):
@@ -53,8 +68,8 @@ class FocalPoint(BaseModel):
     entity_type: str
     focal_score: float = 0.0
     urgency: str = "watch"
-    signal_types: list[str] = Field(default_factory=list)
-    top_headlines: list[str] = Field(default_factory=list)
+    signal_types: List[str] = Field(default_factory=list)
+    top_headlines: List[str] = Field(default_factory=list)
     narrative: str = ""
 
 
@@ -69,9 +84,9 @@ class ClusteredEvent(BaseModel):
 
 
 class IntelligenceState(BaseModel):
-    countries: dict[str, CountryScore] = Field(default_factory=dict)
-    clusters: list[CountrySignalCluster] = Field(default_factory=list)
-    regional: list[RegionalConvergence] = Field(default_factory=list)
-    focal_points: list[FocalPoint] = Field(default_factory=list)
-    signals: list[GeoSignal] = Field(default_factory=list)
+    countries: Dict[str, CountryScore] = Field(default_factory=dict)
+    clusters: List[CountrySignalCluster] = Field(default_factory=list)
+    regional: List[RegionalConvergence] = Field(default_factory=list)
+    focal_points: List[FocalPoint] = Field(default_factory=list)
+    signals: List[GeoSignal] = Field(default_factory=list)
     last_refresh: datetime = Field(default_factory=datetime.utcnow)
