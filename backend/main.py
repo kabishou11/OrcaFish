@@ -21,9 +21,19 @@ from backend.crawl4ai_client import ensure_crawl4ai_installed, crawl4ai_health
 
 # ── Zep CE 服务管理 ───────────────────────────────────────────────────────────
 
-ZEP_DOCKER_COMPOSE_PATH = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "zep", "legacy", "docker-compose.ce.yaml")
+REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+ZEP_DOCKER_COMPOSE_CANDIDATES = (
+    os.path.join(REPO_ROOT, "zep-local", "docker-compose.ce.yaml"),
+    os.path.join(REPO_ROOT, "zep-local", "docker-compose.yml"),
+    os.path.join(REPO_ROOT, "zep", "legacy", "docker-compose.ce.yaml"),
 )
+
+
+def _resolve_zep_compose_path() -> str | None:
+    for compose_path in ZEP_DOCKER_COMPOSE_CANDIDATES:
+        if os.path.exists(compose_path):
+            return compose_path
+    return None
 
 
 def _is_docker_available() -> bool:
@@ -49,16 +59,18 @@ def _is_zep_ce_running() -> bool:
 
 
 async def _start_zep_ce() -> bool:
-    compose_path = ZEP_DOCKER_COMPOSE_PATH
-    if not os.path.exists(compose_path):
-        logger.warning(f"Zep CE docker-compose.yaml 未找到: {compose_path}")
+    compose_path = _resolve_zep_compose_path()
+    if not compose_path:
+        logger.warning(
+            "未找到本地 Zep compose 文件，默认应位于 zep-local/docker-compose.ce.yaml"
+        )
         return False
     if not _is_docker_available():
         logger.warning("Docker 未运行，请先启动 Docker Desktop")
         return False
 
     try:
-        logger.info("正在启动 Zep CE 服务（docker compose up -d）...")
+        logger.info(f"正在启动本地 Zep 服务（{compose_path} -> docker compose up -d）...")
         subprocess.run(
             ["docker", "compose", "-f", compose_path, "up", "-d"],
             check=True,

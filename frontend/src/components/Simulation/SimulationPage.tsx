@@ -678,8 +678,8 @@ export default function SimulationPage() {
   const [graphLoading, setGraphLoading] = useState(false)
   const [graphRefreshKey, setGraphRefreshKey] = useState(0)
   const graphSignatureRef = useRef('')
+  const lastGraphRunIdRef = useRef<string | null>(null)
   const lastGraphRefreshKeyRef = useRef(0)
-  const lastGraphRunIdRef = useRef('')
   const draftPayload = draft as SimulationDraftWithCountryContext | null
   const draftCountryContext =
     draftPayload?.country_context ??
@@ -711,6 +711,9 @@ export default function SimulationPage() {
   // Fetch graph data when selected run changes or prediction meaningfully advances
   useEffect(() => {
     if (!selectedRun?.run_id) {
+      graphSignatureRef.current = ''
+      lastGraphRunIdRef.current = null
+      lastGraphRefreshKeyRef.current = graphRefreshKey
       setGraphData(null)
       setGraphLoading(false)
       graphSignatureRef.current = ''
@@ -718,6 +721,10 @@ export default function SimulationPage() {
       lastGraphRunIdRef.current = ''
       return
     }
+
+    const runChanged = lastGraphRunIdRef.current !== selectedRun.run_id
+    lastGraphRunIdRef.current = selectedRun.run_id
+    lastGraphRefreshKeyRef.current = graphRefreshKey
 
     let active = true
     const currentRunId = selectedRun.run_id
@@ -750,10 +757,19 @@ export default function SimulationPage() {
       }
     }
 
+    if (runChanged) {
+      graphSignatureRef.current = ''
+      setGraphData(null)
+    }
+
     void loadGraph()
+    const id = setInterval(() => {
+      void loadGraph()
+    }, selectedRun.status === 'running' ? 5000 : 12000)
 
     return () => {
       active = false
+      clearInterval(id)
     }
   }, [selectedRun?.run_id, selectedRun?.status, selectedRun?.rounds_completed, graphRefreshKey])
 

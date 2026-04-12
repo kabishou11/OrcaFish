@@ -183,18 +183,30 @@ ZEP_API_SECRET=
 
 #### 7.1.3 使用仓库内自带 compose
 
-仓库中已有一份可直接参考的本地编排文件：
+当前仓库默认推荐这一路径：
 
-- `zep/legacy/docker-compose.ce.yaml`
+- `zep-local/docker-compose.ce.yaml`
 
-它会拉起这些核心组件：
+后端启动时也会优先尝试这个 compose；只有仓库里没有 `zep-local/` 时，才会回退旧的 `zep/legacy/docker-compose.ce.yaml`。
+
+首次复刻请按下面做：
+
+```powershell
+cd F:\1work\OrcFish\orcafish
+Copy-Item zep-local\.env.example zep-local\.env
+# 打开 zep-local\zep.yaml，确认 api_secret
+# 再把项目根目录 .env 里的 ZEP_API_SECRET 改成同一个值
+docker compose -f zep-local/docker-compose.ce.yaml up -d
+```
+
+这套默认会拉起这些核心组件：
 
 - `zep`：`8000`
 - `graphiti`：`8003`
 - `neo4j`：`7474` / `7687`
 - `postgres`：`5432`
 
-如果你要直接使用这份 compose，建议在 `zep/legacy/` 目录补齐相应 `.env` 后再启动。
+如果你的仓库副本里暂时没有 `zep-local/`，再改用旧的 `zep/legacy/docker-compose.ce.yaml`。
 
 #### 7.1.4 本地端口核对
 

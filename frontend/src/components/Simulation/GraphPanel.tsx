@@ -27,6 +27,7 @@ interface GraphEdge {
   fact?: string
   episodes?: string[]
   created_at?: string
+  weight?: number
   // D3 computed
   isSelfLoop?: boolean
   curvature?: number
@@ -272,6 +273,61 @@ function matchEpisodeNode(node: GraphNode, refs: string[]): boolean {
   return refs.some((ref) => tokens.some((token) => token === ref || token.includes(ref) || ref.includes(token)))
 }
 
+function serializeGraphData(graphData?: { nodes: GraphNode[]; edges: GraphEdge[] }): string {
+  if (!graphData) return ''
+  const nodeSignature = [...graphData.nodes]
+    .map((node) => `${node.id}|${node.type}|${node.name}|${(node.labels ?? []).join(',')}`)
+    .sort()
+    .join('||')
+  const edgeSignature = [...graphData.edges]
+    .map((edge) => {
+      const sourceId = typeof edge.source === 'string' ? edge.source : edge.source.id
+      const targetId = typeof edge.target === 'string' ? edge.target : edge.target.id
+      return `${sourceId}>${targetId}|${edge.type || edge.fact_type || edge.name || edge.label || ''}|${edge.weight ?? ''}`
+    })
+    .sort()
+    .join('||')
+  return `${graphData.nodes.length}::${graphData.edges.length}::${nodeSignature}##${edgeSignature}`
+}
+
+function getEdgeSourceId(edge: GraphEdge | (GraphEdge & { source: GraphNode; target: GraphNode })): string {
+  return typeof edge.source === 'string' ? edge.source : edge.source.id
+}
+
+function getEdgeTargetId(edge: GraphEdge | (GraphEdge & { source: GraphNode; target: GraphNode })): string {
+  return typeof edge.target === 'string' ? edge.target : edge.target.id
+}
+
+function getEdgeTypeKey(edge: GraphEdge | (GraphEdge & { source: GraphNode; target: GraphNode })): string {
+  return String((edge.rawData?.type as string) || edge.type || edge.fact_type || edge.name || edge.label || '关联')
+}
+
+function isSameSelectedEdge(
+  edge: GraphEdge & { source: GraphNode; target: GraphNode },
+  selected: Record<string, unknown>,
+): boolean {
+  if (selected.uuid && edge.uuid && String(selected.uuid) === String(edge.uuid)) return true
+  if (Boolean(selected.isSelfLoopGroup) !== Boolean(edge.rawData?.isSelfLoopGroup)) return false
+
+  const selectedSourceId = String(selected.source_node_uuid || selected.source || '')
+  const selectedTargetId = String(selected.target_node_uuid || selected.target || '')
+  const edgeSourceId = getEdgeSourceId(edge)
+  const edgeTargetId = getEdgeTargetId(edge)
+
+  if (selectedSourceId && edgeSourceId !== selectedSourceId) return false
+  if (selectedTargetId && edgeTargetId !== selectedTargetId) return false
+
+  const selectedType = String(selected.type || selected.fact_type || selected.name || selected.label || '')
+  const edgeType = getEdgeTypeKey(edge)
+  if (selectedType && edgeType !== selectedType) return false
+
+  const selectedFact = String(selected.fact || '')
+  const edgeFact = String(edge.fact || edge.rawData?.fact || '')
+  if (selectedFact && edgeFact && selectedFact !== edgeFact) return false
+
+  return true
+}
+
 // ── Path helpers ────────────────────────────────────────────────────────────────
 
 function getLinkPath(d: GraphEdge & { source: GraphNode; target: GraphNode }): string {
@@ -412,22 +468,31 @@ export default function GraphPanel({
   const svgRef = useRef<SVGSVGElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const simRef = useRef<d3.Simulation<GraphNode, GraphEdge> | null>(null)
+  const layoutRef = useRef<Map<string, { x: number; y: number }>>(new Map())
+  const zoomTransformRef = useRef(d3.zoomIdentity)
+  const selectedItemRef = useRef<SelectedItem | null>(null)
 
   const [selectedItem, setSelectedItem] = useState<SelectedItem | null>(null)
   const [showEdgeLabels, setShowEdgeLabels] = useState(true)
   const [relationFilter, setRelationFilter] = useState<'all' | string>('all')
   const [focusCurrentPath, setFocusCurrentPath] = useState(false)
-  const [entityTypes, setEntityTypes] = useState<EntityType[]>([])
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const linkLabelRef = useRef<d3.Selection<SVGTextElement, any, SVGGElement, unknown> | null>(null)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const linkLabelBgRef = useRef<d3.Selection<SVGRectElement, any, SVGGElement, unknown> | null>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const linkPathRef = useRef<d3.Selection<SVGPathElement, any, SVGGElement, unknown> | null>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const nodeRef = useRef<d3.Selection<SVGCircleElement, any, SVGGElement, unknown> | null>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const nodeLabelRef = useRef<d3.Selection<SVGTextElement, any, SVGGElement, unknown> | null>(null)
   const linkGroupRef = useRef<d3.Selection<SVGGElement, unknown, null, undefined> | null>(null)
 
-  // Compute entity types for legend
-  useEffect(() => {
-    if (!graphData?.nodes) { setEntityTypes([]); return }
+  // Detect simulation end
+
+  const entityTypes = useMemo(() => {
+    if (!graphData?.nodes) return [] as EntityType[]
     const typeMap: Record<string, EntityType> = {}
     graphData.nodes.forEach((node) => {
       const type = getNodeType(node)
@@ -436,7 +501,7 @@ export default function GraphPanel({
       }
       typeMap[type].count++
     })
-    setEntityTypes(Object.values(typeMap))
+    return Object.values(typeMap)
   }, [graphData])
 
   const availableRelationTypes = useMemo(() => {
@@ -455,36 +520,45 @@ export default function GraphPanel({
   }, [graphData])
 
   useEffect(() => {
+    selectedItemRef.current = selectedItem
+  }, [selectedItem])
+
+  useEffect(() => {
     if (relationFilter === 'all') return
     if (!availableRelationTypes.some((item) => item.type === relationFilter)) {
       setRelationFilter('all')
     }
   }, [availableRelationTypes, relationFilter])
 
-  // Render graph
+  const graphSignature = useMemo(() => serializeGraphData(graphData), [graphData])
+  const selectedNodeIdForPath = useMemo(() => {
+    if (!focusCurrentPath || selectedItem?.type !== 'node') return ''
+    return String(selectedItem.data?.id || '')
+  }, [focusCurrentPath, selectedItem])
+
   useEffect(() => {
     if (!svgRef.current || !containerRef.current || !graphData?.nodes?.length) return
 
-    // Stop previous simulation
-    if (simRef.current) { simRef.current.stop(); simRef.current = null }
+    if (simRef.current) {
+      simRef.current.stop()
+      simRef.current = null
+    }
 
     const container = containerRef.current
     const width = container.clientWidth || 600
     const height = container.clientHeight || 400
 
     const svg = d3.select(svgRef.current)
-      .attr('width', width).attr('height', height)
-
-    svg.selectAll('*').remove()
+      .attr('width', width)
+      .attr('height', height)
 
     const nodesData = graphData.nodes || []
     const edgesData = graphData.edges || []
-
-    // Build nodes
-    const nodes: GraphNode[] = nodesData.map(n => ({ ...n }))
-    const nodeMap: Record<string, GraphNode> = {}
-    nodes.forEach(n => { nodeMap[n.id] = n })
-    const nodeIds = new Set(nodes.map(n => n.id))
+    const nodes: GraphNode[] = nodesData.map((node) => ({ ...node }))
+    const nodeIds = new Set(nodes.map((node) => node.id))
+    layoutRef.current = new Map(
+      Array.from(layoutRef.current.entries()).filter(([id]) => nodeIds.has(id)),
+    )
     const laneGroups = new Map<string, GraphNode[]>()
     nodes.forEach((node) => {
       const type = getNodeType(node)
@@ -494,117 +568,129 @@ export default function GraphPanel({
     })
     laneGroups.forEach((group, type) => {
       group.forEach((node, index) => {
-        node.x = getLaneX(type, width)
-        node.y = getLaneY(index, group.length, height)
+        const saved = layoutRef.current.get(node.id)
+        node.x = saved?.x ?? getLaneX(type, width)
+        node.y = saved?.y ?? getLaneY(index, group.length, height)
       })
     })
 
-    // Build edges with pair counting + self-loop grouping
-    const edgePairCount: Record<string, number> = {}
-    const selfLoopMap: Record<string, GraphEdge[]> = {}
-    const selectedNodeId = selectedItem?.type === 'node' ? String(selectedItem.data?.id || '') : ''
-    const tempEdges = edgesData.filter((e: GraphEdge) => {
-      const sid = String(e.source), tid = String(e.target)
-      const relationType = String((e.rawData?.type as string) || e.type || e.fact_type || e.name || e.label || '关联')
-      if (!nodeIds.has(sid) || !nodeIds.has(tid)) return false
-      if (relationFilter !== 'all' && relationType !== relationFilter) return false
-      if (focusCurrentPath && selectedNodeId) return sid === selectedNodeId || tid === selectedNodeId
-      return true
+    const nodeMap: Record<string, GraphNode> = {}
+    nodes.forEach((node) => {
+      nodeMap[node.id] = node
     })
 
-    tempEdges.forEach(e => {
-      const sid = String(e.source), tid = String(e.target)
-      if (sid === tid) {
-        if (!selfLoopMap[sid]) selfLoopMap[sid] = []
-        selfLoopMap[sid].push(e)
+    const edgePairCount: Record<string, number> = {}
+    const selfLoopMap: Record<string, GraphEdge[]> = {}
+    const tempEdges = edgesData.filter((edge: GraphEdge) => {
+      const sourceId = getEdgeSourceId(edge)
+      const targetId = getEdgeTargetId(edge)
+      return nodeIds.has(sourceId) && nodeIds.has(targetId)
+    })
+
+    tempEdges.forEach((edge) => {
+      const sourceId = getEdgeSourceId(edge)
+      const targetId = getEdgeTargetId(edge)
+      if (sourceId === targetId) {
+        if (!selfLoopMap[sourceId]) selfLoopMap[sourceId] = []
+        selfLoopMap[sourceId].push(edge)
       } else {
-        const key = [sid, tid].sort().join('_')
+        const key = [sourceId, targetId].sort().join('_')
         edgePairCount[key] = (edgePairCount[key] || 0) + 1
       }
     })
 
     const pairIndex: Record<string, number> = {}
     const processedSelfLoops = new Set<string>()
-
     const edges: (GraphEdge & { source: GraphNode; target: GraphNode })[] = []
-    tempEdges.forEach((e: GraphEdge) => {
-      const sid = String(e.source), tid = String(e.target)
-      if (sid === tid) {
-        if (processedSelfLoops.has(sid)) return
-        processedSelfLoops.add(sid)
-        const loops = selfLoopMap[sid] || []
+
+    tempEdges.forEach((edge) => {
+      const sourceId = getEdgeSourceId(edge)
+      const targetId = getEdgeTargetId(edge)
+      if (sourceId === targetId) {
+        if (processedSelfLoops.has(sourceId)) return
+        processedSelfLoops.add(sourceId)
+        const loops = selfLoopMap[sourceId] || []
         edges.push({
-          ...e, source: nodeMap[sid], target: nodeMap[sid],
-          isSelfLoop: true, curvature: 0,
+          ...edge,
+          source: nodeMap[sourceId],
+          target: nodeMap[sourceId],
+          isSelfLoop: true,
+          curvature: 0,
           rawData: {
             isSelfLoopGroup: true,
-            source_name: nodeMap[sid]?.name,
+            source_name: nodeMap[sourceId]?.name,
             selfLoopCount: loops.length,
-            selfLoopEdges: loops.map(l => ({ ...l, source_name: nodeMap[sid]?.name })),
+            selfLoopEdges: loops.map((loop) => ({ ...loop, source_name: nodeMap[sourceId]?.name })),
           },
         })
         return
       }
-      const key = [sid, tid].sort().join('_')
+      const key = [sourceId, targetId].sort().join('_')
       if (!(key in pairIndex)) pairIndex[key] = 0
-      const idx = pairIndex[key]++
+      const index = pairIndex[key]++
       const total = edgePairCount[key]
-      const reversed = sid > tid
+      const reversed = sourceId > targetId
       let curvature = 0
       if (total > 1) {
         const range = Math.min(1.2, 0.6 + total * 0.15)
-        curvature = ((idx / (total - 1)) * 2 * range - range)
+        curvature = ((index / (total - 1)) * 2 * range - range)
         if (reversed) curvature = -curvature
       }
       edges.push({
-        ...e, source: nodeMap[sid], target: nodeMap[tid],
-        curvature, isSelfLoop: false, pairIndex: idx, pairTotal: total,
+        ...edge,
+        source: nodeMap[sourceId],
+        target: nodeMap[targetId],
+        curvature,
+        isSelfLoop: false,
+        pairIndex: index,
+        pairTotal: total,
         rawData: {
-          ...e,
-          source_name: nodeMap[sid]?.name,
-          target_name: nodeMap[tid]?.name,
-          label: (e as any).label || e.name || e.fact_type || 'RELATED',
-          type: (e as any).type || e.fact_type || e.name || 'RELATED',
-          weight: (e as any).weight,
+          ...edge,
+          source_name: nodeMap[sourceId]?.name,
+          target_name: nodeMap[targetId]?.name,
+          label: edge.label || edge.name || edge.fact_type || 'RELATED',
+          type: edge.type || edge.fact_type || edge.name || 'RELATED',
+          weight: edge.weight,
         },
       })
     })
 
     const colorMap: Record<string, string> = {}
-    entityTypes.forEach(t => { colorMap[t.name] = t.color })
+    entityTypes.forEach((item) => {
+      colorMap[item.name] = item.color
+    })
     const getColor = (type: string) => colorMap[type] || '#999'
 
-    // D3 simulation
     const simulation = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(edges).id((d: any) => d.id).distance(d => {
-        const edgeType = ((d as any).rawData?.type as string) || ''
-        const base = edgeType.includes('initiates') ? 160 : edgeType.includes('references') ? 130 : 200
-        const cnt = (d as any).pairTotal || 1
-        return base + (cnt - 1) * 60
+      .force('link', d3.forceLink(edges).id((d: any) => d.id).distance((d) => {
+        const edgeType = (((d as any).rawData?.type as string) || '')
+        const base = edgeType.includes('initiates') ? 110 : edgeType.includes('references') ? 90 : 150
+        const count = (d as any).pairTotal || 1
+        return base + (count - 1) * 50
       }))
-      .force('charge', d3.forceManyBody().strength(d => {
+      .force('charge', d3.forceManyBody().strength((d) => {
         const type = getNodeType(d as GraphNode)
         if (type === 'Action') return -200
         if (type === 'Episode') return -280
         return -400
       }))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collide', d3.forceCollide(d => {
+      .force('collide', d3.forceCollide((d) => {
         const type = getNodeType(d as GraphNode)
         if (type === 'Action') return 42
         if (type === 'Episode') return 48
         return 60
       }))
-      .force('x', d3.forceX(d => getLaneX(getNodeType(d as GraphNode), width)).strength(0.20))
+      .force('x', d3.forceX((d) => getLaneX(getNodeType(d as GraphNode), width)).strength(0.28))
       .force('y', d3.forceY((d, i) => {
         const type = getNodeType(d as GraphNode)
         const group = laneGroups.get(type) ?? []
-        const index = Math.max(group.findIndex(node => node.id === (d as GraphNode).id), i)
+        const index = Math.max(group.findIndex((node) => node.id === (d as GraphNode).id), i)
         return getLaneY(index, group.length || 1, height)
       }).strength(0.16))
     simRef.current = simulation
 
-    const g = svg.append('g')
+    const g = svg.append('g').attr('transform', zoomTransformRef.current.toString())
 
     const laneSpecs = [
       { x: 0.02, width: 0.18, color: 'rgba(37,99,235,0.04)' },
@@ -628,14 +714,17 @@ export default function GraphPanel({
         .attr('stroke-width', 1)
     })
 
-    // Zoom
-    svg.call(d3.zoom<SVGSVGElement, unknown>()
+    const zoomBehavior = d3.zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.1, 4])
-      .on('zoom', (event) => g.attr('transform', event.transform as any)))
+      .on('zoom', (event) => {
+        zoomTransformRef.current = event.transform
+        g.attr('transform', event.transform.toString())
+      })
+    svg.call(zoomBehavior)
+    svg.call(zoomBehavior.transform, zoomTransformRef.current)
 
     linkGroupRef.current = g.append('g')
 
-    // Links
     const defs = svg.append('defs')
     defs.append('marker')
       .attr('id', 'graph-arrow')
@@ -650,226 +739,302 @@ export default function GraphPanel({
       .attr('d', 'M0,-5L10,0L0,5')
 
     const link = linkGroupRef.current.selectAll<SVGPathElement, GraphEdge>('path')
-      .data(edges).join('path')
-      .attr('stroke', d => getEdgeColor(d)).attr('stroke-width', d => Math.max(2.8, (((d.rawData?.weight as number) ?? 1)) * 3.2))
+      .data(edges)
+      .join('path')
+      .attr('stroke', (d) => getEdgeColor(d))
+      .attr('stroke-width', (d) => Math.max(2.8, (((d.rawData?.weight as number) ?? 1)) * 3.2))
       .attr('stroke-opacity', 0.98)
-      .attr('fill', 'none').style('cursor', 'pointer')
+      .attr('fill', 'none')
+      .style('cursor', 'pointer')
       .attr('marker-end', 'url(#graph-arrow)')
       .on('click', (event, d) => {
         event.stopPropagation()
-        resetHighlight()
-        const edgeEpisodeRefs = (((d.rawData?.episodes as string[] | undefined) ?? []) as string[])
-          .map((item) => String(item || '').trim())
-          .filter(Boolean)
-        nodeEls.attr('opacity', (node) => {
-          if (node.id === d.source.id || node.id === d.target.id) return 1
-          return matchEpisodeNode(node, edgeEpisodeRefs) ? 1 : 0.18
-        })
-        nodeEls.attr('r', (node) => {
-          const base = getNodeRadius(getNodeType(node))
-          if (node.id === d.source.id || node.id === d.target.id) return base + 4
-          return matchEpisodeNode(node, edgeEpisodeRefs) ? base + 5 : base
-        })
-        nodeLabels.attr('opacity', (node) => {
-          if (node.id === d.source.id || node.id === d.target.id) return 1
-          return matchEpisodeNode(node, edgeEpisodeRefs) ? 1 : 0.24
-        })
-        link.attr('stroke-opacity', (edge) => edge === d ? 1 : 0.12)
-        d3.select(event.currentTarget as Element).attr('stroke', '#0f172a').attr('stroke-width', 3.2)
-        nodeEls
-          .filter(node => node.id === d.source.id || node.id === d.target.id)
-          .attr('stroke', '#0f172a')
-          .attr('stroke-width', 4)
-        if (edgeEpisodeRefs.length > 0) {
-          nodeEls
-            .filter(node => matchEpisodeNode(node, edgeEpisodeRefs))
-            .attr('stroke', '#0ea5e9')
-            .attr('stroke-width', 4)
-        }
-        linkLabelBg?.attr('fill', 'rgba(255,255,255,0.95)')
-        linkLabel?.attr('fill', '#666')
         setSelectedItem({ type: 'edge', data: d.rawData || {} })
       })
+    linkPathRef.current = link as any
 
-    // Link label backgrounds
     const linkLabelBg = linkGroupRef.current.selectAll<SVGRectElement, GraphEdge>('rect')
-      .data(edges).join('rect')
-      .attr('fill', 'rgba(255,255,255,0.95)').attr('rx', 5).attr('ry', 5)
-      .style('cursor', 'pointer').style('pointer-events', 'all')
+      .data(edges)
+      .join('rect')
+      .attr('fill', 'rgba(255,255,255,0.95)')
+      .attr('rx', 5)
+      .attr('ry', 5)
+      .style('cursor', 'pointer')
+      .style('pointer-events', 'all')
       .style('display', showEdgeLabels ? 'block' : 'none')
       .on('click', (event, d) => {
         event.stopPropagation()
-        resetHighlight()
-        const edgeEpisodeRefs = (((d.rawData?.episodes as string[] | undefined) ?? []) as string[])
-          .map((item) => String(item || '').trim())
-          .filter(Boolean)
-        nodeEls.attr('opacity', (node) => {
-          if (node.id === d.source.id || node.id === d.target.id) return 1
-          return matchEpisodeNode(node, edgeEpisodeRefs) ? 1 : 0.18
-        })
-        nodeEls.attr('r', (node) => {
-          const base = getNodeRadius(getNodeType(node))
-          if (node.id === d.source.id || node.id === d.target.id) return base + 4
-          return matchEpisodeNode(node, edgeEpisodeRefs) ? base + 5 : base
-        })
-        nodeLabels.attr('opacity', (node) => {
-          if (node.id === d.source.id || node.id === d.target.id) return 1
-          return matchEpisodeNode(node, edgeEpisodeRefs) ? 1 : 0.24
-        })
-        link.attr('stroke-opacity', (edge) => edge === d ? 1 : 0.12)
-        d3.select(event.currentTarget as Element).attr('fill', 'rgba(52,152,219,0.1)')
-        if (edgeEpisodeRefs.length > 0) {
-          nodeEls
-            .filter(node => matchEpisodeNode(node, edgeEpisodeRefs))
-            .attr('stroke', '#0ea5e9')
-            .attr('stroke-width', 4)
-        }
         setSelectedItem({ type: 'edge', data: d.rawData || {} })
       })
     linkLabelBgRef.current = linkLabelBg as any
 
-    // Link labels
-    const linkLabel = linkGroupRef.current.selectAll<SVGTextElement, any>('text')
-      .data(edges).join('text')
-      .text(d => getEdgeLabel(d))
-      .attr('font-size', 11).attr('fill', '#1f2937')
-      .attr('text-anchor', 'middle').attr('dominant-baseline', 'middle')
-      .style('cursor', 'pointer').style('pointer-events', 'all')
+    const linkLabel = linkGroupRef.current.selectAll<SVGTextElement, GraphEdge>('text')
+      .data(edges)
+      .join('text')
+      .text((d) => getEdgeLabel(d))
+      .attr('font-size', 11)
+      .attr('fill', '#1f2937')
+      .attr('text-anchor', 'middle')
+      .attr('dominant-baseline', 'middle')
+      .style('cursor', 'pointer')
+      .style('pointer-events', 'all')
       .style('display', showEdgeLabels ? 'block' : 'none')
       .style('font-family', 'system-ui, sans-serif')
       .on('click', (event, d) => {
         event.stopPropagation()
-        resetHighlight()
-        const edgeEpisodeRefs = (((d.rawData?.episodes as string[] | undefined) ?? []) as string[])
-          .map((item) => String(item || '').trim())
-          .filter(Boolean)
-        nodeEls.attr('opacity', (node) => {
-          if (node.id === d.source.id || node.id === d.target.id) return 1
-          return matchEpisodeNode(node, edgeEpisodeRefs) ? 1 : 0.18
-        })
-        nodeEls.attr('r', (node) => {
-          const base = getNodeRadius(getNodeType(node))
-          if (node.id === d.source.id || node.id === d.target.id) return base + 4
-          return matchEpisodeNode(node, edgeEpisodeRefs) ? base + 5 : base
-        })
-        nodeLabels.attr('opacity', (node) => {
-          if (node.id === d.source.id || node.id === d.target.id) return 1
-          return matchEpisodeNode(node, edgeEpisodeRefs) ? 1 : 0.24
-        })
-        link.attr('stroke-opacity', (edge) => edge === d ? 1 : 0.12)
-        d3.select(event.currentTarget as Element).attr('fill', '#3498db')
-        if (edgeEpisodeRefs.length > 0) {
-          nodeEls
-            .filter(node => matchEpisodeNode(node, edgeEpisodeRefs))
-            .attr('stroke', '#0ea5e9')
-            .attr('stroke-width', 4)
-        }
         setSelectedItem({ type: 'edge', data: d.rawData || {} })
       })
     linkLabelRef.current = linkLabel as any
 
-    // Nodes
     const nodeGroup = g.append('g')
     const nodeEls = nodeGroup.selectAll<SVGCircleElement, GraphNode>('circle')
-      .data(nodes).join('circle')
-      .attr('r', d => getNodeRadius(getNodeType(d)))
-      .attr('fill', d => getColor(getNodeType(d)))
-      .attr('stroke', '#fff').attr('stroke-width', 2.5)
+      .data(nodes)
+      .join('circle')
+      .attr('r', (d) => getNodeRadius(getNodeType(d)))
+      .attr('fill', (d) => getColor(getNodeType(d)))
+      .attr('stroke', '#fff')
+      .attr('stroke-width', 2.5)
       .style('cursor', 'pointer')
       .call(d3.drag<SVGCircleElement, GraphNode>()
         .on('start', (event, d) => {
           if (!event.active) simulation.alphaTarget(0.3).restart()
-          d.fx = d.x; d.fy = d.y
+          d.fx = d.x
+          d.fy = d.y
         })
-        .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y })
+        .on('drag', (event, d) => {
+          d.fx = event.x
+          d.fy = event.y
+          layoutRef.current.set(d.id, { x: event.x, y: event.y })
+        })
         .on('end', (event, d) => {
           if (!event.active) simulation.alphaTarget(0)
-          d.fx = null; d.fy = null
-        }) as any
-      )
+          d.fx = null
+          d.fy = null
+          layoutRef.current.set(d.id, { x: d.x ?? event.x, y: d.y ?? event.y })
+        }) as any)
       .on('click', (event, d) => {
         event.stopPropagation()
-        resetHighlight()
-        nodeEls.attr('opacity', (node) => (node.id === d.id ? 1 : 0.24))
-        nodeEls.attr('r', (node) => {
-          const base = getNodeRadius(getNodeType(node))
-          return node.id === d.id ? base + 4 : base
-        })
-        nodeLabels.attr('opacity', (node) => (node.id === d.id ? 1 : 0.28))
-        link.attr('stroke-opacity', (edge) => (edge.source.id === d.id || edge.target.id === d.id ? 0.98 : 0.12))
-        d3.select(event.currentTarget as SVGCircleElement).attr('stroke', '#E91E63').attr('stroke-width', 4)
-        link.filter(l => l.source.id === d.id || l.target.id === d.id)
-          .attr('stroke', '#E91E63').attr('stroke-width', 2.5)
         setSelectedItem({
-          type: 'node', data: d.rawData || d as unknown as Record<string, unknown>,
+          type: 'node',
+          data: d.rawData || d as unknown as Record<string, unknown>,
           entityType: getNodeType(d),
           color: getColor(getNodeType(d)),
         })
       })
       .on('mouseenter', (event, d) => {
-        if (!selectedItem || (selectedItem.data as any)?.id !== d.id)
+        const selected = selectedItemRef.current
+        if (!selected || selected.type !== 'node' || String(selected.data?.id || '') !== d.id) {
           d3.select(event.currentTarget as SVGCircleElement).attr('stroke-width', 3)
+        }
       })
       .on('mouseleave', (event, d) => {
-        if (!selectedItem || (selectedItem.data as any)?.id !== d.id)
+        const selected = selectedItemRef.current
+        if (!selected || selected.type !== 'node' || String(selected.data?.id || '') !== d.id) {
           d3.select(event.currentTarget as SVGCircleElement).attr('stroke-width', 2.5)
+        }
       })
+    nodeRef.current = nodeEls as any
 
-    // Node labels
     const nodeLabels = nodeGroup.selectAll<SVGTextElement, GraphNode>('text')
-      .data(nodes).join('text')
-      .text(d => getNodeLabel(d))
-      .attr('font-size', d => {
+      .data(nodes)
+      .join('text')
+      .text((d) => getNodeLabel(d))
+      .attr('font-size', (d) => {
         const type = getNodeType(d)
         if (type === 'Action') return 10
         if (type === 'Episode') return 10
         return 11
-      }).attr('fill', '#334155').attr('font-weight', d => getNodeType(d) === 'Action' ? '400' : '600')
-      .attr('dx', d => {
+      })
+      .attr('fill', '#334155')
+      .attr('font-weight', (d) => getNodeType(d) === 'Action' ? '400' : '600')
+      .attr('dx', (d) => {
         const type = getNodeType(d)
         if (type === 'Action') return 11
         if (type === 'Episode') return 13
         return 15
-      }).attr('dy', 4)
-      .style('pointer-events', 'none').style('font-family', 'system-ui, sans-serif')
+      })
+      .attr('dy', 4)
+      .style('pointer-events', 'none')
+      .style('font-family', 'system-ui, sans-serif')
+    nodeLabelRef.current = nodeLabels as any
 
-    // Highlight reset helper
-    function resetHighlight() {
-      nodeEls.attr('stroke', '#fff').attr('stroke-width', 2.5)
-      nodeEls.attr('r', (d) => getNodeRadius(getNodeType(d)))
-      nodeEls.attr('opacity', 1)
-      nodeLabels.attr('opacity', 1)
-      link
-        .attr('stroke', d => getEdgeColor(d))
-        .attr('stroke-width', d => Math.max(2.8, (((d.rawData?.weight as number) ?? 1)) * 3.2))
-        .attr('stroke-opacity', 0.98)
-      linkLabelBg.attr('fill', 'rgba(255,255,255,0.95)')
-      linkLabel.attr('fill', '#666')
-    }
+    svg.on('click', () => {
+      setSelectedItem(null)
+    })
 
-    // Click background to deselect
-    svg.on('click', () => { setSelectedItem(null); resetHighlight() })
-
-    // Tick
     simulation.on('tick', () => {
-      link.attr('d', d => getLinkPath(d as any))
-      linkLabel?.attr('x', d => getLinkMidpoint(d as any).x).attr('y', d => getLinkMidpoint(d as any).y)
-      linkLabelBg?.each(function(d) {
+      link.attr('d', (d) => getLinkPath(d as any))
+      linkLabel.attr('x', (d) => getLinkMidpoint(d as any).x).attr('y', (d) => getLinkMidpoint(d as any).y)
+      linkLabelBg.each(function(d) {
         const mid = getLinkMidpoint(d as any)
         const textEl = (d3.select(this.parentNode as Element).select('text').node() as SVGTextElement)
         if (!textEl) return
         const bbox = textEl.getBBox()
         d3.select(this)
-          .attr('x', mid.x - bbox.width / 2 - 4).attr('y', mid.y - bbox.height / 2 - 2)
-          .attr('width', bbox.width + 8).attr('height', bbox.height + 4)
+          .attr('x', mid.x - bbox.width / 2 - 4)
+          .attr('y', mid.y - bbox.height / 2 - 2)
+          .attr('width', bbox.width + 8)
+          .attr('height', bbox.height + 4)
       })
-      nodeEls.attr('cx', d => d.x ?? 0).attr('cy', d => d.y ?? 0)
-      nodeLabels.attr('x', d => d.x ?? 0).attr('y', d => d.y ?? 0)
+      nodeEls.attr('cx', (d) => d.x ?? 0).attr('cy', (d) => d.y ?? 0)
+      nodeLabels.attr('x', (d) => d.x ?? 0).attr('y', (d) => d.y ?? 0)
+      nodes.forEach((node) => {
+        layoutRef.current.set(node.id, { x: node.x ?? 0, y: node.y ?? 0 })
+      })
     })
 
-    return () => { simulation.stop() }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusCurrentPath, graphData, entityTypes, relationFilter, selectedItem])
+    return () => {
+      simulation.stop()
+      if (simRef.current === simulation) simRef.current = null
+    }
+  }, [entityTypes, graphData, graphSignature])
+
+  useEffect(() => {
+    const nodeEls = nodeRef.current
+    const nodeLabels = nodeLabelRef.current
+    const link = linkPathRef.current
+    const linkLabel = linkLabelRef.current
+    const linkLabelBg = linkLabelBgRef.current
+    if (!nodeEls || !nodeLabels || !link || !linkLabel || !linkLabelBg) return
+
+    const edgeMatchesFilter = (edge: GraphEdge & { source: GraphNode; target: GraphNode }) => {
+      const relationType = getEdgeTypeKey(edge)
+      if (relationFilter !== 'all' && relationType !== relationFilter) return false
+      if (focusCurrentPath && selectedNodeIdForPath) {
+        return edge.source.id === selectedNodeIdForPath || edge.target.id === selectedNodeIdForPath
+      }
+      return true
+    }
+
+    const visibleEdgeSet = new Set<GraphEdge & { source: GraphNode; target: GraphNode }>()
+    const visibleNodeIdSet = new Set<string>()
+
+    link.each(function(edge) {
+      const typedEdge = edge as GraphEdge & { source: GraphNode; target: GraphNode }
+      if (!edgeMatchesFilter(typedEdge)) return
+      visibleEdgeSet.add(typedEdge)
+      visibleNodeIdSet.add(typedEdge.source.id)
+      visibleNodeIdSet.add(typedEdge.target.id)
+      const episodes = ((typedEdge.rawData?.selfLoopEdges as Array<Record<string, unknown>> | undefined) ?? [])
+      episodes.forEach((item) => {
+        const refs = (((item.episodes as string[] | undefined) ?? []) as string[])
+          .map((ref) => String(ref || '').trim())
+          .filter(Boolean)
+        refs.forEach((ref) => visibleNodeIdSet.add(ref))
+      })
+    })
+
+    if (visibleEdgeSet.size === 0 && relationFilter === 'all' && !focusCurrentPath) {
+      nodeEls.each(function(node) {
+        visibleNodeIdSet.add((node as GraphNode).id)
+      })
+      link.each(function(edge) {
+        visibleEdgeSet.add(edge as GraphEdge & { source: GraphNode; target: GraphNode })
+      })
+    }
+
+    nodeEls
+      .attr('display', (node) => (visibleNodeIdSet.size === 0 || visibleNodeIdSet.has(node.id) ? null : 'none'))
+      .attr('stroke', '#fff')
+      .attr('stroke-width', 2.5)
+      .attr('opacity', (node) => (visibleNodeIdSet.size === 0 || visibleNodeIdSet.has(node.id) ? 1 : 0))
+      .attr('r', (d) => getNodeRadius(getNodeType(d)))
+
+    nodeLabels
+      .attr('display', (node) => (visibleNodeIdSet.size === 0 || visibleNodeIdSet.has(node.id) ? null : 'none'))
+      .attr('opacity', (node) => (visibleNodeIdSet.size === 0 || visibleNodeIdSet.has(node.id) ? 1 : 0))
+
+    link
+      .attr('display', (edge) => (visibleEdgeSet.has(edge as GraphEdge & { source: GraphNode; target: GraphNode }) ? null : 'none'))
+      .attr('stroke', (d) => getEdgeColor(d as GraphEdge))
+      .attr('stroke-width', (d) => Math.max(2.8, ((((d as GraphEdge).rawData?.weight as number) ?? 1)) * 3.2))
+      .attr('stroke-opacity', (edge) => (visibleEdgeSet.has(edge as GraphEdge & { source: GraphNode; target: GraphNode }) ? 0.98 : 0))
+
+    linkLabelBg
+      .attr('display', (edge) => (visibleEdgeSet.has(edge as GraphEdge & { source: GraphNode; target: GraphNode }) ? null : 'none'))
+      .attr('fill', 'rgba(255,255,255,0.95)')
+
+    linkLabel
+      .attr('display', (edge) => (visibleEdgeSet.has(edge as GraphEdge & { source: GraphNode; target: GraphNode }) ? null : 'none'))
+      .attr('fill', '#666')
+
+    if (!selectedItem) return
+
+    if (selectedItem.type === 'node') {
+      const selectedId = String(selectedItem.data?.id || '')
+      nodeEls
+        .attr('opacity', (node) => {
+          if (visibleNodeIdSet.size > 0 && !visibleNodeIdSet.has(node.id)) return 0
+          return node.id === selectedId ? 1 : 0.24
+        })
+        .attr('r', (node) => {
+          const base = getNodeRadius(getNodeType(node))
+          return node.id === selectedId ? base + 4 : base
+        })
+        .attr('stroke', (node) => (node.id === selectedId ? '#E91E63' : '#fff'))
+        .attr('stroke-width', (node) => (node.id === selectedId ? 4 : 2.5))
+      nodeLabels.attr('opacity', (node) => {
+        if (visibleNodeIdSet.size > 0 && !visibleNodeIdSet.has(node.id)) return 0
+        return node.id === selectedId ? 1 : 0.28
+      })
+      link
+        .attr('stroke-opacity', (edge) => {
+          if (!visibleEdgeSet.has(edge as GraphEdge & { source: GraphNode; target: GraphNode })) return 0
+          return edge.source.id === selectedId || edge.target.id === selectedId ? 0.98 : 0.12
+        })
+        .attr('stroke', (edge) => ((edge.source.id === selectedId || edge.target.id === selectedId) ? '#E91E63' : getEdgeColor(edge)))
+        .attr('stroke-width', (edge) => ((edge.source.id === selectedId || edge.target.id === selectedId) ? 2.5 : Math.max(2.8, (((edge.rawData?.weight as number) ?? 1)) * 3.2)))
+      return
+    }
+
+    let activeEdge: (GraphEdge & { source: GraphNode; target: GraphNode }) | null = null
+    link.each(function(edge) {
+      const typedEdge = edge as GraphEdge & { source: GraphNode; target: GraphNode }
+      if (!visibleEdgeSet.has(typedEdge)) return
+      if (!activeEdge && isSameSelectedEdge(typedEdge, selectedItem.data)) {
+        activeEdge = typedEdge
+      }
+    })
+    if (!activeEdge) return
+
+    const edgeEpisodeRefs = (((selectedItem.data?.episodes as string[] | undefined) ?? []) as string[])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+
+    nodeEls
+      .attr('opacity', (node) => {
+        if (visibleNodeIdSet.size > 0 && !visibleNodeIdSet.has(node.id) && !matchEpisodeNode(node, edgeEpisodeRefs)) return 0
+        if (node.id === activeEdge?.source.id || node.id === activeEdge?.target.id) return 1
+        return matchEpisodeNode(node, edgeEpisodeRefs) ? 1 : 0.18
+      })
+      .attr('r', (node) => {
+        const base = getNodeRadius(getNodeType(node))
+        if (node.id === activeEdge?.source.id || node.id === activeEdge?.target.id) return base + 4
+        return matchEpisodeNode(node, edgeEpisodeRefs) ? base + 5 : base
+      })
+      .attr('stroke', (node) => {
+        if (node.id === activeEdge?.source.id || node.id === activeEdge?.target.id) return '#0f172a'
+        return matchEpisodeNode(node, edgeEpisodeRefs) ? '#0ea5e9' : '#fff'
+      })
+      .attr('stroke-width', (node) => {
+        if (node.id === activeEdge?.source.id || node.id === activeEdge?.target.id) return 4
+        return matchEpisodeNode(node, edgeEpisodeRefs) ? 4 : 2.5
+      })
+    nodeLabels.attr('opacity', (node) => {
+      if (visibleNodeIdSet.size > 0 && !visibleNodeIdSet.has(node.id) && !matchEpisodeNode(node, edgeEpisodeRefs)) return 0
+      if (node.id === activeEdge?.source.id || node.id === activeEdge?.target.id) return 1
+      return matchEpisodeNode(node, edgeEpisodeRefs) ? 1 : 0.24
+    })
+    link
+      .attr('stroke-opacity', (edge) => {
+        if (!visibleEdgeSet.has(edge as GraphEdge & { source: GraphNode; target: GraphNode })) return 0
+        return edge === activeEdge ? 1 : 0.12
+      })
+      .attr('stroke', (edge) => (edge === activeEdge ? '#0f172a' : getEdgeColor(edge)))
+      .attr('stroke-width', (edge) => (edge === activeEdge ? 3.2 : Math.max(2.8, (((edge.rawData?.weight as number) ?? 1)) * 3.2)))
+    linkLabelBg.attr('fill', (edge) => (edge === activeEdge ? 'rgba(52,152,219,0.1)' : 'rgba(255,255,255,0.95)'))
+    linkLabel.attr('fill', (edge) => (edge === activeEdge ? '#3498db' : '#666'))
+  }, [focusCurrentPath, graphSignature, relationFilter, selectedItem, selectedNodeIdForPath])
 
   // Toggle edge labels reactively
   useEffect(() => {

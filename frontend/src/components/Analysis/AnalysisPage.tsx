@@ -494,10 +494,12 @@ function CountryContextBrief({
 
 export default function AnalysisPage() {
   const navigate = useNavigate()
-  const [query, setQuery] = useState('')
-  const [isSubmitting, setIsSubmitting] = useState(false)
   const result = useAnalysisStore((s) => s.result)
   const setResult = useAnalysisStore((s) => s.setResult)
+  const storedDraftQuery = useAnalysisStore((s) => s.draftQuery)
+  const setDraftQuery = useAnalysisStore((s) => s.setDraftQuery)
+  const [query, setQuery] = useState(storedDraftQuery)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const injectSignal = useIntelligenceStore((s) => s.injectSignal)
   const injectedSignals = useIntelligenceStore((s) => s.injectedSignals)
@@ -505,9 +507,15 @@ export default function AnalysisPage() {
   const setSimulationDraft = useSimulationDraftStore((s) => s.setDraft)
   const latestInjectedSignal = injectedSignals[0] ?? null
   const latestCountryHeadline = activeCountryContext?.top_headlines?.[0] ?? null
+  const activeQuery = query.trim() || result?.query?.trim() || storedDraftQuery.trim()
 
   useEffect(() => {
     if (query.trim()) return
+    const restoredQuery = storedDraftQuery || result?.query || ''
+    if (restoredQuery) {
+      setQuery(restoredQuery)
+      return
+    }
     const injectedQuery = latestInjectedSignal?.query?.trim()
     if (injectedQuery) {
       setQuery(injectedQuery)
@@ -516,9 +524,9 @@ export default function AnalysisPage() {
     if (activeCountryContext?.country_name) {
       setQuery(`${activeCountryContext.country_name} 风险升温`)
     }
-  }, [activeCountryContext?.country_name, latestInjectedSignal?.query, query])
+  }, [activeCountryContext?.country_name, latestInjectedSignal?.query, query, result?.query, storedDraftQuery])
 
-  const combinedText = useMemo(() => getCombinedText(result, query), [result, query])
+  const combinedText = useMemo(() => getCombinedText(result, activeQuery), [activeQuery, result])
   const keywordRows = useMemo(() => extractKeywords(result, combinedText).map(([label, value], index) => ({
     label,
     value,
@@ -541,7 +549,7 @@ export default function AnalysisPage() {
   const degraded = result?.status === 'degraded' || result?.data_quality === 'degraded'
 
   const workflowSteps: WorkflowGuideStep[] = [
-    { label: 'STEP 1', title: '先输入议题', description: '输入要追踪的地区、政策或冲突议题，系统会立即发起并行研判。', status: isSubmitting || result ? 'done' : 'active' as const },
+    { label: 'STEP 1', title: '先输入议题', description: '输入要追踪的地区、政策或冲突议题，系统会立即发起并行研判。', status: activeQuery ? 'done' : 'active' as const },
     { label: 'STEP 2', title: '看多路结果依次到达', description: '搜索、媒体、洞察三条流会分段返回，不需要等所有内容一次性生成。', status: result?.status === 'running' || result?.status === 'assembling' ? 'active' : result?.status === 'completed' || result?.status === 'degraded' ? 'done' : 'pending' as const },
     { label: 'STEP 3', title: '启动未来预测', description: '综合结论稳定后，直接把摘要与预测任务带入未来推演工作台。', status: result?.status === 'completed' || result?.status === 'degraded' ? 'active' : 'pending' as const },
   ]
@@ -549,12 +557,12 @@ export default function AnalysisPage() {
   const isAnalysisRunning = result?.status === 'running' || result?.status === 'assembling'
 
   useEffect(() => {
-    if (!result?.task_id || result.task_id.startsWith('pending-')) return
-    setIsSubmitting(false)
-  }, [result?.task_id])
+    if (query === storedDraftQuery) return
+    setDraftQuery(query)
+  }, [query, setDraftQuery, storedDraftQuery])
 
   useEffect(() => {
-    if (!result?.task_id || result.task_id.startsWith('pending-') || result.status === 'completed' || result.status === 'failed' || result.status === 'degraded') return
+    if (!result?.task_id || result.task_id.startsWith('pending-') || result.task_id.startsWith('failed-') || result.status === 'completed' || result.status === 'failed' || result.status === 'degraded') return
     let cancelled = false
     const poll = async () => {
       while (!cancelled) {
@@ -576,8 +584,10 @@ export default function AnalysisPage() {
   }, [result?.task_id, result?.status, setResult])
 
   useEffect(() => {
-    if ((result?.status !== 'completed' && result?.status !== 'degraded') || !query.trim()) return
-    const coords = extractSignalCoords(query.trim())
+    if ((result?.status !== 'completed' && result?.status !== 'degraded') || !activeQuery) return
+    const alreadyInjected = injectedSignals.some((signal) => signal.id === `analysis-${result.task_id}`)
+    if (alreadyInjected) return
+    const coords = extractSignalCoords(activeQuery)
     injectSignal({
       id: `analysis-${result.task_id}`,
       type: 'diplomatic',
@@ -585,73 +595,94 @@ export default function AnalysisPage() {
       lon: coords?.lon,
       intensity: 0.9,
       timestamp: new Date().toISOString(),
-      description: `议题研判：${query.trim()}`,
+      description: `议题研判：${activeQuery}`,
       source: 'analysis',
-      query: query.trim(),
+      query: activeQuery,
     })
-  }, [injectSignal, query, result?.status, result?.task_id])
+  }, [activeQuery, injectSignal, injectedSignals, result?.status, result?.task_id])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    const trimmedQuery = query.trim()
-    if (!trimmedQuery) return
-    setIsSubmitting(true)
+    const nextQuery = query.trim()
+    if (!nextQuery) return
+    setLoading(true)
     setError(null)
+    const pendingTimestamp = Date.now()
     setResult({
-      task_id: `pending-${Date.now()}`,
+      task_id: `pending-${pendingTimestamp}`,
+      query: nextQuery,
       status: 'running',
+      progress: 2,
+      data_quality: 'unknown',
       query_report: '',
       media_report: '',
       insight_report: '',
       final_report: '',
       html_report: '',
-      progress: 2,
-      data_quality: 'unknown',
-      ui_message: '议题已提交，正在建立并行任务...',
+      ui_message: '议题已提交，正在创建多代理并行任务。',
       agent_status: { query: 'queued', media: 'queued', insight: 'queued', report: 'queued' },
       agent_metrics: {
-        query: { key: 'query', label: '搜索代理体', status: 'queued', progress: 0, source_count: 0, summary: '正在排队启动搜索任务。', fallback_used: false },
+        query: { key: 'query', label: '搜索代理体', status: 'queued', progress: 0, source_count: 0, summary: `正在为“${nextQuery}”锁定公开线索。`, fallback_used: false },
         media: { key: 'media', label: '媒体代理体', status: 'queued', progress: 0, source_count: 0, summary: '正在排队启动媒体任务。', fallback_used: false },
         insight: { key: 'insight', label: '洞察代理体', status: 'queued', progress: 0, source_count: 0, summary: '正在排队启动洞察任务。', fallback_used: false },
         report: { key: 'report', label: '综合报告', status: 'queued', progress: 0, source_count: 0, summary: '等待三路结果汇总。', fallback_used: false },
       },
-      sections: REPORT_SECTIONS.map((item, index) => ({
-        key: item.key,
-        title: item.title,
+      sections: REPORT_SECTIONS.map((section, index) => ({
+        key: section.key,
+        title: section.title,
         order: index + 1,
         status: 'queued',
-        summary: '该板块会在任务启动后依次到达。',
+        summary: index === 0 ? `正在为“${nextQuery}”锁定公开线索。` : '等待前序结果到达后继续输出。',
         content: '',
       })),
       timeline: [{
-        key: 'queued',
+        key: `pending-${pendingTimestamp}`,
         stage: 'queued',
         title: '议题已提交',
-        detail: `“${trimmedQuery}”已送入队列，正在等待后端返回任务编号。`,
-        status: 'queued',
+        detail: `“${nextQuery}”已送出，系统正在建立搜索、媒体、洞察三路并行任务。`,
+        status: 'running',
         created_at: new Date().toISOString(),
       }],
+      last_update_at: new Date().toISOString(),
     })
     try {
       const res = await fetch('/api/analysis/trigger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: trimmedQuery }),
+        body: JSON.stringify({ query: nextQuery }),
       })
       if (!res.ok) {
         const err = await res.json()
         throw new Error(err.detail ?? '分析请求失败')
       }
-      setResult(await res.json())
+      const data: AnalysisResult = await res.json()
+      setResult({ ...data, query: data.query ?? nextQuery })
     } catch (err) {
-      setResult(null)
+      setResult({
+        task_id: `failed-${Date.now()}`,
+        query: nextQuery,
+        status: 'failed',
+        progress: 0,
+        error: err instanceof Error ? err.message : '未知错误',
+        ui_message: '议题提交失败，请检查服务后重试。',
+        timeline: [{
+          key: `failed-${Date.now()}`,
+          stage: 'failed',
+          title: '议题提交失败',
+          detail: err instanceof Error ? err.message : '未知错误',
+          status: 'failed',
+          created_at: new Date().toISOString(),
+        }],
+        last_update_at: new Date().toISOString(),
+      })
       setError(err instanceof Error ? err.message : '未知错误')
-      setIsSubmitting(false)
+    } finally {
+      setLoading(false)
     }
   }
 
   const handleSendToSimulation = () => {
-    const topic = query.trim() || '议题预测'
+    const topic = activeQuery || '议题预测'
     const seed = result?.final_report?.trim() || result?.query_report?.trim() || stripHtml(result?.html_report) || topic
     setSimulationDraft({
       name: `${topic} 未来预测`,
@@ -669,7 +700,7 @@ export default function AnalysisPage() {
   const currentStage = result?.ui_message
     ?? (degraded
       ? '当前报告已先生成观察版，可继续查看重点结论'
-      : result?.final_report ? '综合结论正在收口' : result?.insight_report ? '洞察结构已到达' : result?.media_report ? '媒体脉络已到达' : result?.query_report ? '搜索流已到达' : isSubmitting || isAnalysisRunning ? '多代理并行启动中' : '等待发起议题')
+      : result?.final_report ? '综合结论正在收口' : result?.insight_report ? '洞察结构已到达' : result?.media_report ? '媒体脉络已到达' : result?.query_report ? '搜索流已到达' : loading || isAnalysisRunning ? '多代理并行启动中' : '等待发起议题')
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)', maxWidth: 1480 }}>
@@ -747,8 +778,8 @@ export default function AnalysisPage() {
                   ))}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', justifyContent: 'space-between' }}>
-                  <button type="submit" className="btn btn-primary" disabled={isSubmitting || isAnalysisRunning || !query.trim()}>
-                    {isSubmitting ? <><div className="spinner-sm" /> 提交中...</> : isAnalysisRunning ? <><div className="spinner-sm" /> 研判进行中...</> : <><PlayIcon /> 启动议题研判</>}
+                  <button type="submit" className="btn btn-primary" disabled={loading || isAnalysisRunning || !query.trim()}>
+                    {loading ? <><div className="spinner-sm" /> 已提交，正在接入阶段反馈...</> : isAnalysisRunning ? <><div className="spinner-sm" /> 研判进行中...</> : <><PlayIcon /> 启动议题研判</>}
                   </button>
                   <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>当前阶段: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{currentStage}</span></div>
                 </div>
@@ -768,6 +799,11 @@ export default function AnalysisPage() {
                 <div style={{ marginTop: 6, fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
                   {result?.degraded_reason || currentStage}
                 </div>
+                {result && result.status !== 'completed' && result.status !== 'failed' && (
+                  <div style={{ marginTop: 8, fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                    即使临时切换到别的页面，回来后也会继续显示当前议题的阶段进度与已到达内容。
+                  </div>
+                )}
               </div>
 
               <div style={{ height: 6, borderRadius: 999, overflow: 'hidden', background: 'var(--bg-overlay)' }}>
