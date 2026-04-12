@@ -142,7 +142,7 @@ function getCoverage(result: AnalysisResult | null) {
 
 function getQualityTone(result: AnalysisResult | null) {
   if (result?.status === 'degraded' || result?.data_quality === 'degraded') {
-    return { text: '当前为降级底稿', color: '#d97706' }
+    return { text: '当前为观察版', color: '#d97706' }
   }
   if (result?.data_quality === 'mixed') {
     return { text: '当前为混合质量', color: '#2563eb' }
@@ -249,7 +249,7 @@ function FlowCard({
     summary: string
   }
 }) {
-  const badgeText = status === 'done' ? '已到达' : status === 'fallback' ? '底稿' : status === 'running' ? '输出中' : '待输出'
+  const badgeText = status === 'done' ? '已到达' : status === 'fallback' ? '观察版' : status === 'running' ? '输出中' : '待输出'
   return (
     <div style={{
       border: `1px solid ${status === 'running' || status === 'fallback' ? `${color}55` : 'var(--border)'}`,
@@ -272,7 +272,7 @@ function FlowCard({
         <div style={{ display: 'flex', gap: 'var(--sp-3)', flexWrap: 'wrap', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
           <span>进度 {metric.progress}%</span>
           <span>来源 {metric.source_count ?? 0}</span>
-          {metric.fallback_used ? <span style={{ color }}>{'监控底稿'}</span> : null}
+          {metric.fallback_used ? <span style={{ color }}>{'观察摘要'}</span> : null}
         </div>
       ) : null}
       <div style={{ marginTop: 'auto', height: 3, borderRadius: 999, overflow: 'hidden', background: 'var(--bg-overlay)' }}>
@@ -288,7 +288,7 @@ function SectionStreamCard({ title, content, color, active, status, summary }: {
       <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{title}</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {status ? <span style={{ fontSize: '0.68rem', color: active ? color : 'var(--text-muted)' }}>{status === 'fallback' ? '监控底稿' : status === 'done' ? '已到达' : status === 'running' ? '输出中' : status === 'degraded' ? '降级' : '待输出'}</span> : null}
+          {status ? <span style={{ fontSize: '0.68rem', color: active ? color : 'var(--text-muted)' }}>{status === 'fallback' ? '观察摘要' : status === 'done' ? '已到达' : status === 'running' ? '输出中' : status === 'degraded' ? '观察版' : '待输出'}</span> : null}
           <div style={{ width: 8, height: 8, borderRadius: '50%', background: content ? color : 'var(--border-bright)', boxShadow: content ? `0 0 10px ${color}` : 'none' }} />
         </div>
       </div>
@@ -341,7 +341,7 @@ function StagePulse({ events }: { events: NonNullable<AnalysisResult['timeline']
       </div>
       <div className="panel-body" style={{ display: 'grid', gap: 'var(--sp-3)' }}>
         {latest.length === 0 ? (
-          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>提交议题后，这里会先显示监控底稿接入、多代理启动和各板块到达的事件。</div>
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>提交议题后，这里会先显示监控摘要接入、多代理启动和各板块到达的事件。</div>
         ) : latest.map((event) => (
           <div
             key={`${event.key}-${event.created_at}`}
@@ -422,7 +422,7 @@ function ResultArrivalRail({
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
                   <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '0.8rem' }}>{section.title}</div>
                   <span style={{ fontSize: '0.66rem', color: arrived || running || fallback ? color : 'var(--text-muted)' }}>
-                    {arrived ? '已到达' : fallback ? '监控底稿' : running ? '输出中' : '等待中'}
+                    {arrived ? '已到达' : fallback ? '观察摘要' : running ? '输出中' : '等待中'}
                   </span>
                 </div>
                 <div style={{ marginTop: 6, fontSize: '0.74rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
@@ -495,7 +495,7 @@ function CountryContextBrief({
 export default function AnalysisPage() {
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const result = useAnalysisStore((s) => s.result)
   const setResult = useAnalysisStore((s) => s.setResult)
   const [error, setError] = useState<string | null>(null)
@@ -505,6 +505,18 @@ export default function AnalysisPage() {
   const setSimulationDraft = useSimulationDraftStore((s) => s.setDraft)
   const latestInjectedSignal = injectedSignals[0] ?? null
   const latestCountryHeadline = activeCountryContext?.top_headlines?.[0] ?? null
+
+  useEffect(() => {
+    if (query.trim()) return
+    const injectedQuery = latestInjectedSignal?.query?.trim()
+    if (injectedQuery) {
+      setQuery(injectedQuery)
+      return
+    }
+    if (activeCountryContext?.country_name) {
+      setQuery(`${activeCountryContext.country_name} 风险升温`)
+    }
+  }, [activeCountryContext?.country_name, latestInjectedSignal?.query, query])
 
   const combinedText = useMemo(() => getCombinedText(result, query), [result, query])
   const keywordRows = useMemo(() => extractKeywords(result, combinedText).map(([label, value], index) => ({
@@ -529,17 +541,20 @@ export default function AnalysisPage() {
   const degraded = result?.status === 'degraded' || result?.data_quality === 'degraded'
 
   const workflowSteps: WorkflowGuideStep[] = [
-    { label: 'STEP 1', title: '先输入议题', description: '输入要追踪的地区、政策或冲突议题，系统会立即发起并行研判。', status: loading ? 'done' : 'active' as const },
+    { label: 'STEP 1', title: '先输入议题', description: '输入要追踪的地区、政策或冲突议题，系统会立即发起并行研判。', status: isSubmitting || result ? 'done' : 'active' as const },
     { label: 'STEP 2', title: '看多路结果依次到达', description: '搜索、媒体、洞察三条流会分段返回，不需要等所有内容一次性生成。', status: result?.status === 'running' || result?.status === 'assembling' ? 'active' : result?.status === 'completed' || result?.status === 'degraded' ? 'done' : 'pending' as const },
     { label: 'STEP 3', title: '启动未来预测', description: '综合结论稳定后，直接把摘要与预测任务带入未来推演工作台。', status: result?.status === 'completed' || result?.status === 'degraded' ? 'active' : 'pending' as const },
   ]
 
-  useEffect(() => {
-    setLoading(result?.status === 'running' || result?.status === 'assembling')
-  }, [result?.status])
+  const isAnalysisRunning = result?.status === 'running' || result?.status === 'assembling'
 
   useEffect(() => {
-    if (!result?.task_id || result.status === 'completed' || result.status === 'failed' || result.status === 'degraded') return
+    if (!result?.task_id || result.task_id.startsWith('pending-')) return
+    setIsSubmitting(false)
+  }, [result?.task_id])
+
+  useEffect(() => {
+    if (!result?.task_id || result.task_id.startsWith('pending-') || result.status === 'completed' || result.status === 'failed' || result.status === 'degraded') return
     let cancelled = false
     const poll = async () => {
       while (!cancelled) {
@@ -578,15 +593,50 @@ export default function AnalysisPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!query.trim()) return
-    setLoading(true)
+    const trimmedQuery = query.trim()
+    if (!trimmedQuery) return
+    setIsSubmitting(true)
     setError(null)
-    setResult(null)
+    setResult({
+      task_id: `pending-${Date.now()}`,
+      status: 'running',
+      query_report: '',
+      media_report: '',
+      insight_report: '',
+      final_report: '',
+      html_report: '',
+      progress: 2,
+      data_quality: 'unknown',
+      ui_message: '议题已提交，正在建立并行任务...',
+      agent_status: { query: 'queued', media: 'queued', insight: 'queued', report: 'queued' },
+      agent_metrics: {
+        query: { key: 'query', label: '搜索代理体', status: 'queued', progress: 0, source_count: 0, summary: '正在排队启动搜索任务。', fallback_used: false },
+        media: { key: 'media', label: '媒体代理体', status: 'queued', progress: 0, source_count: 0, summary: '正在排队启动媒体任务。', fallback_used: false },
+        insight: { key: 'insight', label: '洞察代理体', status: 'queued', progress: 0, source_count: 0, summary: '正在排队启动洞察任务。', fallback_used: false },
+        report: { key: 'report', label: '综合报告', status: 'queued', progress: 0, source_count: 0, summary: '等待三路结果汇总。', fallback_used: false },
+      },
+      sections: REPORT_SECTIONS.map((item, index) => ({
+        key: item.key,
+        title: item.title,
+        order: index + 1,
+        status: 'queued',
+        summary: '该板块会在任务启动后依次到达。',
+        content: '',
+      })),
+      timeline: [{
+        key: 'queued',
+        stage: 'queued',
+        title: '议题已提交',
+        detail: `“${trimmedQuery}”已送入队列，正在等待后端返回任务编号。`,
+        status: 'queued',
+        created_at: new Date().toISOString(),
+      }],
+    })
     try {
       const res = await fetch('/api/analysis/trigger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: query.trim() }),
+        body: JSON.stringify({ query: trimmedQuery }),
       })
       if (!res.ok) {
         const err = await res.json()
@@ -594,9 +644,9 @@ export default function AnalysisPage() {
       }
       setResult(await res.json())
     } catch (err) {
+      setResult(null)
       setError(err instanceof Error ? err.message : '未知错误')
-    } finally {
-      setLoading(false)
+      setIsSubmitting(false)
     }
   }
 
@@ -618,8 +668,8 @@ export default function AnalysisPage() {
   const currentProgress = result?.progress ?? 0
   const currentStage = result?.ui_message
     ?? (degraded
-      ? '当前输出为降级底稿，请继续观察后再增强'
-      : result?.final_report ? '综合结论正在收口' : result?.insight_report ? '洞察结构已到达' : result?.media_report ? '媒体脉络已到达' : result?.query_report ? '搜索流已到达' : loading || result?.status === 'running' ? '多代理并行启动中' : '等待发起议题')
+      ? '当前报告已先生成观察版，可继续查看重点结论'
+      : result?.final_report ? '综合结论正在收口' : result?.insight_report ? '洞察结构已到达' : result?.media_report ? '媒体脉络已到达' : result?.query_report ? '搜索流已到达' : isSubmitting || isAnalysisRunning ? '多代理并行启动中' : '等待发起议题')
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)', maxWidth: 1480 }}>
@@ -682,7 +732,7 @@ export default function AnalysisPage() {
                     </span>
                   </div>
                   <div style={{ marginTop: 8, fontSize: '0.74rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                    这条议题来自全球观测或总览工作台。你可以直接沿着这条观察线索继续做研判，完成后再送入未来预测。
+                    这条议题来自全球观测或总览工作台，已自动带入输入框。你可以直接继续研判，完成后再送入未来预测。
                   </div>
                 </div>
               ) : null}
@@ -697,8 +747,8 @@ export default function AnalysisPage() {
                   ))}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', justifyContent: 'space-between' }}>
-                  <button type="submit" className="btn btn-primary" disabled={loading || !query.trim()}>
-                    {loading ? <><div className="spinner-sm" /> 发送中...</> : <><PlayIcon /> 启动议题研判</>}
+                  <button type="submit" className="btn btn-primary" disabled={isSubmitting || isAnalysisRunning || !query.trim()}>
+                    {isSubmitting ? <><div className="spinner-sm" /> 提交中...</> : isAnalysisRunning ? <><div className="spinner-sm" /> 研判进行中...</> : <><PlayIcon /> 启动议题研判</>}
                   </button>
                   <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>当前阶段: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{currentStage}</span></div>
                 </div>
@@ -748,7 +798,7 @@ export default function AnalysisPage() {
                     ? 'running'
                     : 'waiting'
               return (
-                <FlowCard key={agent.key} title={agent.name} status={flowStatus} summary={metric?.summary || (result?.agent_status?.[agent.key] === 'fallback' ? '当前为监控底稿，等待更多真实素材补强。' : getSectionSummary(typeof content === 'string' ? content : undefined))} color={agent.color} metric={metric} />
+                <FlowCard key={agent.key} title={agent.name} status={flowStatus} summary={metric?.summary || (result?.agent_status?.[agent.key] === 'fallback' ? '当前先展示观察摘要，等待更多真实素材补强。' : getSectionSummary(typeof content === 'string' ? content : undefined))} color={agent.color} metric={metric} />
               )
             })}
           </div>
@@ -778,7 +828,7 @@ export default function AnalysisPage() {
                   <span className={`badge ${degraded ? 'badge-high' : 'badge-normal'}`}><span className="badge-dot" />{qualityTone.text}</span>
                   {(result?.status === 'completed' || result?.status === 'degraded') ? (
                     <button type="button" className="btn btn-primary btn-sm" onClick={handleSendToSimulation} style={{ opacity: degraded ? 0.88 : 1 }}>
-                      {degraded ? '以底稿启动未来预测' : '启动未来预测'}
+                      {degraded ? '以观察版启动未来预测' : '启动未来预测'}
                     </button>
                   ) : null}
                 </div>
@@ -798,7 +848,7 @@ export default function AnalysisPage() {
                 {result?.task_id && <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'var(--text-muted)' }}>{result.task_id}</span>}
                 <span className={`badge ${result?.status === 'completed' ? 'badge-done' : result?.status === 'degraded' ? 'badge-high' : result?.status === 'failed' ? 'badge-failed' : 'badge-active'}`}>
                   <span className="badge-dot" />
-                  {result?.status === 'completed' ? '已完成' : result?.status === 'degraded' ? '降级底稿' : result?.status === 'failed' ? '失败' : result ? '输出中' : '待开始'}
+                  {result?.status === 'completed' ? '已完成' : result?.status === 'degraded' ? '观察版' : result?.status === 'failed' ? '失败' : result ? '输出中' : '待开始'}
                 </span>
               </div>
             </div>
@@ -829,7 +879,7 @@ export default function AnalysisPage() {
               <span className="panel-title">综合报告版面</span>
               {(result?.status === 'completed' || result?.status === 'degraded') && (
                 <button type="button" className="btn btn-primary btn-sm" onClick={handleSendToSimulation} style={{ opacity: degraded ? 0.82 : 1 }}>
-                  {degraded ? '以底稿启动未来预测' : '启动未来预测'}
+                  {degraded ? '以观察版启动未来预测' : '启动未来预测'}
                 </button>
               )}
             </div>
@@ -873,7 +923,7 @@ export default function AnalysisPage() {
                   fontSize: '0.78rem',
                   lineHeight: 1.7,
                 }}>
-                  {result?.degraded_reason || '当前为监控底稿：系统已拿到可工作的新闻与信号摘要，但三路真实素材仍不足。这份报告适合继续观察、补充数据和进入预测预演，不应视为最终完整研判。'}
+                  {result?.degraded_reason || '当前报告已先基于监控摘要与结构化线索生成观察版，适合继续查看重点结论、补充素材并进入未来预测。'}
                 </div>
               ) : null}
               {result?.news_digest?.length ? (

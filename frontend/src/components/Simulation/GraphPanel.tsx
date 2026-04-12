@@ -195,12 +195,12 @@ function getNodeType(node: GraphNode): string {
 }
 
 function getLaneX(type: string, width: number): number {
-  if (type === 'Event' || type === 'Goal') return width * 0.12
-  if (type === 'Episode') return width * 0.28
-  if (type === 'Actor' || type === 'Region' || type === 'Concept') return width * 0.46
-  if (type === 'Platform') return width * 0.63
-  if (type === 'Agent') return width * 0.79
-  if (type === 'Action') return width * 0.92
+  if (type === 'Event' || type === 'Goal') return width * 0.10
+  if (type === 'Episode') return width * 0.26
+  if (type === 'Actor' || type === 'Region' || type === 'Concept') return width * 0.44
+  if (type === 'Platform') return width * 0.60
+  if (type === 'Agent') return width * 0.76
+  if (type === 'Action') return width * 0.91
   return width * 0.5
 }
 
@@ -418,20 +418,12 @@ export default function GraphPanel({
   const [relationFilter, setRelationFilter] = useState<'all' | string>('all')
   const [focusCurrentPath, setFocusCurrentPath] = useState(false)
   const [entityTypes, setEntityTypes] = useState<EntityType[]>([])
-  const [showFinishedHint, setShowFinishedHint] = useState(false)
-  const [wasSimulating, setWasSimulating] = useState(false)
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const linkLabelRef = useRef<d3.Selection<SVGTextElement, any, SVGGElement, unknown> | null>(null)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const linkLabelBgRef = useRef<d3.Selection<SVGRectElement, any, SVGGElement, unknown> | null>(null)
   const linkGroupRef = useRef<d3.Selection<SVGGElement, unknown, null, undefined> | null>(null)
-
-  // Detect simulation end
-  useEffect(() => {
-    if (wasSimulating && !isSimulating) setShowFinishedHint(true)
-    setWasSimulating(isSimulating)
-  }, [isSimulating, wasSimulating])
 
   // Compute entity types for legend
   useEffect(() => {
@@ -487,11 +479,11 @@ export default function GraphPanel({
 
     const nodesData = graphData.nodes || []
     const edgesData = graphData.edges || []
-    const nodeMap: Record<string, GraphNode> = {}
-    nodesData.forEach(n => { nodeMap[n.id] = n })
 
     // Build nodes
     const nodes: GraphNode[] = nodesData.map(n => ({ ...n }))
+    const nodeMap: Record<string, GraphNode> = {}
+    nodes.forEach(n => { nodeMap[n.id] = n })
     const nodeIds = new Set(nodes.map(n => n.id))
     const laneGroups = new Map<string, GraphNode[]>()
     nodes.forEach((node) => {
@@ -586,41 +578,41 @@ export default function GraphPanel({
     const simulation = d3.forceSimulation(nodes)
       .force('link', d3.forceLink(edges).id((d: any) => d.id).distance(d => {
         const edgeType = ((d as any).rawData?.type as string) || ''
-        const base = edgeType.includes('initiates') ? 110 : edgeType.includes('references') ? 90 : 150
+        const base = edgeType.includes('initiates') ? 160 : edgeType.includes('references') ? 130 : 200
         const cnt = (d as any).pairTotal || 1
-        return base + (cnt - 1) * 50
+        return base + (cnt - 1) * 60
       }))
       .force('charge', d3.forceManyBody().strength(d => {
         const type = getNodeType(d as GraphNode)
-        if (type === 'Action') return -120
-        if (type === 'Episode') return -170
-        return -260
+        if (type === 'Action') return -200
+        if (type === 'Episode') return -280
+        return -400
       }))
       .force('center', d3.forceCenter(width / 2, height / 2))
       .force('collide', d3.forceCollide(d => {
         const type = getNodeType(d as GraphNode)
-        if (type === 'Action') return 30
-        if (type === 'Episode') return 34
-        return 44
+        if (type === 'Action') return 42
+        if (type === 'Episode') return 48
+        return 60
       }))
-      .force('x', d3.forceX(d => getLaneX(getNodeType(d as GraphNode), width)).strength(0.28))
+      .force('x', d3.forceX(d => getLaneX(getNodeType(d as GraphNode), width)).strength(0.20))
       .force('y', d3.forceY((d, i) => {
         const type = getNodeType(d as GraphNode)
         const group = laneGroups.get(type) ?? []
         const index = Math.max(group.findIndex(node => node.id === (d as GraphNode).id), i)
         return getLaneY(index, group.length || 1, height)
-      }).strength(0.22))
+      }).strength(0.16))
     simRef.current = simulation
 
     const g = svg.append('g')
 
     const laneSpecs = [
-      { label: '议题层', x: 0.02, width: 0.18, color: 'rgba(37,99,235,0.05)' },
-      { label: '证据层', x: 0.20, width: 0.16, color: 'rgba(14,165,233,0.05)' },
-      { label: '实体层', x: 0.36, width: 0.20, color: 'rgba(249,115,22,0.05)' },
-      { label: '平台层', x: 0.56, width: 0.14, color: 'rgba(22,163,74,0.05)' },
-      { label: '观察角色层', x: 0.70, width: 0.18, color: 'rgba(124,58,237,0.05)' },
-      { label: '动作层', x: 0.88, width: 0.10, color: 'rgba(15,118,110,0.05)' },
+      { x: 0.02, width: 0.18, color: 'rgba(37,99,235,0.04)' },
+      { x: 0.20, width: 0.16, color: 'rgba(14,165,233,0.04)' },
+      { x: 0.36, width: 0.20, color: 'rgba(249,115,22,0.04)' },
+      { x: 0.56, width: 0.14, color: 'rgba(22,163,74,0.04)' },
+      { x: 0.70, width: 0.18, color: 'rgba(124,58,237,0.04)' },
+      { x: 0.88, width: 0.10, color: 'rgba(15,118,110,0.04)' },
     ]
 
     const laneLayer = g.append('g')
@@ -632,16 +624,8 @@ export default function GraphPanel({
         .attr('height', Math.max(height - 110, 120))
         .attr('rx', 18)
         .attr('fill', lane.color)
-        .attr('stroke', 'rgba(148,163,184,0.12)')
+        .attr('stroke', 'rgba(148,163,184,0.08)')
         .attr('stroke-width', 1)
-      laneLayer.append('text')
-        .attr('x', width * lane.x + 14)
-        .attr('y', 84)
-        .attr('fill', '#64748b')
-        .attr('font-size', 11)
-        .attr('font-weight', 700)
-        .attr('font-family', 'IBM Plex Mono, monospace')
-        .text(lane.label)
     })
 
     // Zoom
@@ -1021,53 +1005,6 @@ export default function GraphPanel({
     if (selectedItem?.type !== 'node' || String(selectedItem.data?.type || '') !== 'Episode') return []
     return groupedSelectedNodeRelations.outgoing.slice(0, 4)
   }, [groupedSelectedNodeRelations.outgoing, selectedItem])
-  const selectionGuide = useMemo(() => {
-    if (!selectedItem) {
-      return {
-        title: '当前建议',
-        detail: '先点议题节点，再顺着关系线读证据与动作路径。',
-        tone: '#2563eb',
-      }
-    }
-    if (selectedItem.type === 'edge') {
-      return {
-        title: '正在查看关系',
-        detail: selectedEdgeEvidenceNodes.length > 0
-          ? `这条关系已命中 ${selectedEdgeEvidenceNodes.length} 个证据片段，建议先点右侧证据卡，再回看两端节点。`
-          : '建议先回到源节点或目标节点，再继续追读上下文。',
-        tone: '#0f766e',
-      }
-    }
-    if (String(selectedItem.data?.type || '') === 'Episode') {
-      return {
-        title: '正在查看证据片段',
-        detail: evidenceRelationPreview.length > 0
-          ? `该证据当前支撑 ${evidenceRelationPreview.length} 条可见关系，建议先切到关系检查器继续追读。`
-          : '先阅读证据摘要，再查看该节点发出的关系。',
-        tone: '#0369a1',
-      }
-    }
-    return {
-      title: '正在查看节点',
-      detail: selectedNodeRelations.length > 0
-        ? `该节点当前可看到 ${selectedNodeRelations.length} 条关联关系，建议从右侧关系卡继续下钻。`
-        : '当前节点关系较少，可以切回全图继续选点。',
-      tone: '#7c3aed',
-    }
-  }, [evidenceRelationPreview.length, selectedEdgeEvidenceNodes.length, selectedItem, selectedNodeRelations.length])
-  const selectionSummary = useMemo(() => {
-    if (!selectedItem) return null
-    if (selectedItem.type === 'edge') {
-      return {
-        label: '当前关系',
-        value: formatRelationSentence(selectedItem.data),
-      }
-    }
-    return {
-      label: String(selectedItem.data?.type || '') === 'Episode' ? '当前证据' : '当前节点',
-      value: String(selectedItem.data?.name || selectedItem.data?.id || '未命名节点'),
-    }
-  }, [selectedItem])
   const inspectorWidth = isFullscreen ? 420 : 360
   const edgeToggleRight = selectedItem ? inspectorWidth + 32 : 20
   const relationPillStyle: React.CSSProperties = {
@@ -1093,9 +1030,6 @@ export default function GraphPanel({
       }}>
         <div style={{ pointerEvents: 'auto' }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>未来关系图谱</div>
-          <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-            按议题、证据、实体、平台、观察角色与最新动作分层展示。先看议题，再顺着证据与关系往下读。
-          </div>
         </div>
         <div style={{ display: 'flex', gap: 10, pointerEvents: 'auto' }}>
           {onRefresh && (
@@ -1105,9 +1039,9 @@ export default function GraphPanel({
             </button>
           )}
           {onToggleMaximize ? (
-            <button onClick={onToggleMaximize} style={toolBtnStyle(false)} title={isFullscreen ? '退出全屏' : '最大化图谱'}>
+            <button onClick={onToggleMaximize} style={toolBtnStyle(false)} title={isFullscreen ? '返回工作台' : '图谱主视图'}>
               <span style={{ fontSize: 14 }}>{isFullscreen ? '▣' : '⛶'}</span>
-              <span style={{ fontSize: 12 }}>{isFullscreen ? '退出全屏' : '最大化'}</span>
+              <span style={{ fontSize: 12 }}>{isFullscreen ? '返回工作台' : '图谱主视图'}</span>
             </button>
           ) : null}
         </div>
@@ -1136,19 +1070,6 @@ export default function GraphPanel({
         </div>
       )}
 
-      {/* Finished hint */}
-      {showFinishedHint && (
-        <div style={{ ...buildingHintStyle(true), animation: 'fade-in 0.3s ease' }}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth={2} style={{ width: 18, height: 18 }}>
-            <circle cx={12} cy={12} r={10} /><line x1={12} y1={8} x2={12} y2={12} /><circle cx={12} cy={16} r={0.5} fill="#fff" />
-          </svg>
-          <span style={{ flex: 1 }}>关系图谱已更新，可继续观察未来路径</span>
-          <button onClick={() => setShowFinishedHint(false)} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', cursor: 'pointer', borderRadius: '50%', width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14 }}>
-            ×
-          </button>
-        </div>
-      )}
-
       {/* Legend */}
       {entityTypes.length > 0 && (
         <div style={{
@@ -1156,7 +1077,7 @@ export default function GraphPanel({
           padding: '12px 16px', borderRadius: 8, border: '1px solid #eaeaea',
           boxShadow: '0 4px 16px rgba(0,0,0,0.06)', zIndex: 10,
         }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: '#E91E63', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>图谱分层</div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#E91E63', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>节点类型</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 16px', maxWidth: 320 }}>
             {entityTypes.map(t => (
               <div key={t.name} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
@@ -1244,12 +1165,12 @@ export default function GraphPanel({
           maxWidth: '60%',
         }}>
           {[
-            ['议题层', graphData.nodes.filter(node => ['Event', 'Goal'].includes(getNodeType(node))).length],
-            ['证据层', graphData.nodes.filter(node => getNodeType(node) === 'Episode').length],
-            ['实体层', graphData.nodes.filter(node => ['Actor', 'Region', 'Concept'].includes(getNodeType(node))).length],
-            ['平台层', graphData.nodes.filter(node => getNodeType(node) === 'Platform').length],
-            ['代理体层', graphData.nodes.filter(node => getNodeType(node) === 'Agent').length],
-            ['动作层', graphData.nodes.filter(node => getNodeType(node) === 'Action').length],
+            ['议题/目标', graphData.nodes.filter(node => ['Event', 'Goal'].includes(getNodeType(node))).length],
+            ['情节', graphData.nodes.filter(node => getNodeType(node) === 'Episode').length],
+            ['实体', graphData.nodes.filter(node => ['Actor', 'Region', 'Concept'].includes(getNodeType(node))).length],
+            ['平台', graphData.nodes.filter(node => getNodeType(node) === 'Platform').length],
+            ['代理体', graphData.nodes.filter(node => getNodeType(node) === 'Agent').length],
+            ['动作', graphData.nodes.filter(node => getNodeType(node) === 'Action').length],
           ].map(([label, value]) => (
             <div key={label as string} style={{
               background: 'rgba(255,255,255,0.92)', border: '1px solid #dbe7f3', borderRadius: 999,
@@ -1262,84 +1183,6 @@ export default function GraphPanel({
         </div>
       ) : null}
 
-      {graphData?.nodes?.length ? (
-        <div style={{
-          position: 'absolute',
-          top: 140,
-          left: 20,
-          display: 'flex',
-          gap: 8,
-          flexWrap: 'wrap',
-          maxWidth: '58%',
-          zIndex: 10,
-        }}>
-          {['先看议题', '再读证据', '再看实体与平台', '最后追动作路径'].map((item, index) => (
-            <div
-              key={item}
-              style={{
-                background: 'rgba(255,255,255,0.94)',
-                border: '1px solid #dbe7f3',
-                borderRadius: 999,
-                padding: '6px 10px',
-                fontSize: 11,
-                color: index === 0 ? '#2563eb' : '#475569',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                boxShadow: '0 4px 14px rgba(15,23,42,0.04)',
-              }}
-            >
-              <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: '#94a3b8' }}>0{index + 1}</span>
-              <span>{item}</span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
-      {graphData?.nodes?.length ? (
-        <div style={{
-          position: 'absolute',
-          top: 180,
-          left: 20,
-          maxWidth: 380,
-          zIndex: 10,
-          background: 'rgba(255,255,255,0.95)',
-          border: `1px solid ${selectionGuide.tone}22`,
-          borderLeft: `4px solid ${selectionGuide.tone}`,
-          borderRadius: 12,
-          boxShadow: '0 6px 20px rgba(15,23,42,0.06)',
-          padding: '10px 12px',
-        }}>
-          <div style={{ fontSize: 11, color: selectionGuide.tone, fontWeight: 700, letterSpacing: '0.06em', marginBottom: 4 }}>
-            {selectionGuide.title}
-          </div>
-          <div style={{ fontSize: 12, color: '#475569', lineHeight: 1.6 }}>
-            {selectionGuide.detail}
-          </div>
-        </div>
-      ) : null}
-
-      {graphData?.nodes?.length && selectionSummary ? (
-        <div style={{
-          position: 'absolute',
-          top: 260,
-          left: 20,
-          maxWidth: 420,
-          zIndex: 10,
-          background: 'rgba(255,255,255,0.94)',
-          border: '1px solid #dbe7f3',
-          borderRadius: 12,
-          boxShadow: '0 6px 20px rgba(15,23,42,0.05)',
-          padding: '10px 12px',
-        }}>
-          <div style={{ fontSize: 10, color: '#94a3b8', fontWeight: 700, letterSpacing: '0.06em', marginBottom: 4 }}>
-            {selectionSummary.label}
-          </div>
-          <div style={{ fontSize: 12, color: '#1e293b', lineHeight: 1.6, fontWeight: 600 }}>
-            {selectionSummary.value}
-          </div>
-        </div>
-      ) : null}
 
       {/* Detail panel */}
       {selectedItem && (
@@ -1375,37 +1218,6 @@ export default function GraphPanel({
             <SelfLoopContent edge={selfLoopData} />
           ) : (
             <div style={{ padding: 16, overflowY: 'auto' as const, flex: 1 }}>
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-                padding: '10px 12px',
-                background: 'linear-gradient(135deg, rgba(37,99,235,0.06), rgba(255,255,255,0.96))',
-                border: '1px solid #dbe7f3',
-                borderRadius: 10,
-                marginBottom: 14,
-              }}>
-                <div>
-                  <div style={{ fontSize: 11, color: '#2563eb', fontWeight: 700, letterSpacing: '0.05em' }}>
-                    {selectedItem.type === 'node' ? '读图路径' : '关系路径'}
-                  </div>
-                  <div style={{ marginTop: 4, fontSize: 12, color: '#475569', lineHeight: 1.55 }}>
-                    {selectedItem.type === 'node'
-                      ? '先看节点身份，再顺着下方关系卡逐条钻取未来路径。'
-                      : '先读关系句，再跳回源节点或目标节点继续检查上下文。'}
-                  </div>
-                </div>
-                <div style={{
-                  minWidth: 64,
-                  textAlign: 'right',
-                  fontSize: 10,
-                  color: '#64748b',
-                  fontFamily: 'IBM Plex Mono, monospace',
-                }}>
-                  {selectedItem.type === 'node' ? '节点' : '关系'}
-                </div>
-              </div>
               {selectedItem.type === 'edge' && (
                 <div style={{
                   background: '#f8fafc', padding: 12, borderRadius: 8, marginBottom: 16, fontSize: 13,

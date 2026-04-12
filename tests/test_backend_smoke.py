@@ -4,7 +4,9 @@ import asyncio
 import html
 import os
 import sys
+import time
 from pathlib import Path
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Dict, Union
 from unittest.mock import AsyncMock, patch
@@ -437,6 +439,236 @@ async def _assert_runner_can_restart_from_paused() -> None:
 
 def test_oasis_runner_can_restart_from_paused() -> None:
     asyncio.run(_assert_runner_can_restart_from_paused())
+
+
+async def _assert_analysis_team_does_not_wait_for_digest_before_finishing() -> None:
+    from backend.api.routes import analysis as analysis_route
+    from backend.models.analysis import AnalysisTask
+
+    task_id = f"task_digest_nonblocking_{uuid.uuid4().hex[:8]}"
+    task = AnalysisTask(
+        task_id=task_id,
+        query="台海局势升级后的舆论演化",
+        status="running",
+        progress=0,
+        agent_status={"query": "queued", "media": "queued", "insight": "queued", "report": "queued"},
+        agent_metrics=analysis_route._build_initial_agent_metrics(),
+        matched_terms=analysis_route._extract_query_terms("台海局势升级后的舆论演化"),
+        sections=analysis_route._build_initial_sections("台海局势升级后的舆论演化", analysis_route._extract_query_terms("台海局势升级后的舆论演化")),
+        timeline=[],
+        ui_message="测试中",
+    )
+    analysis_route._task_registry[task_id] = task
+
+    class FakeLLMClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    async def fast_research(label: str):
+        await asyncio.sleep(0.01)
+        return SimpleNamespace(final_report=f"{label} live report")
+
+    class FakeQueryAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def research(self, query: str):
+            return await fast_research("query")
+
+    class FakeMediaAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def research(self, query: str):
+            return await fast_research("media")
+
+    class FakeInsightAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def research(self, query: str):
+            return await fast_research("insight")
+
+    class FakeReportAgent:
+        def __init__(self, llm):
+            self.llm = llm
+            self.calls = []
+
+        async def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            await asyncio.sleep(0.01)
+            return "<html><body>ok</body></html>"
+
+    def slow_digest(_: str):
+        time.sleep(5.0)
+        return [
+            {
+                "title": "延迟到达的监控摘要",
+                "summary": "外部监控源很慢，但不该阻塞综合结论。",
+                "source": "Delayed Monitor",
+                "country": "GLOBAL",
+                "published_at": "2026-04-12 13:50",
+                "signal_type": "alert",
+            }
+        ]
+
+    started_at = time.perf_counter()
+    with patch("backend.llm.client.LLMClient", FakeLLMClient), \
+        patch("backend.analysis.agents.query.QueryAgent", FakeQueryAgent), \
+        patch("backend.analysis.agents.media.MediaAgent", FakeMediaAgent), \
+        patch("backend.analysis.agents.insight.InsightAgent", FakeInsightAgent), \
+        patch("backend.analysis.report.agent.ReportAgent", FakeReportAgent), \
+        patch("backend.api.routes.analysis._build_fallback_news_digest", side_effect=slow_digest):
+        results = await analysis_route._run_agent_team(task_id, task.query)
+        elapsed = time.perf_counter() - started_at
+
+    updated_task = analysis_route._task_registry[task_id]
+    try:
+        assert elapsed < 2.5
+        assert results == {
+            "query": "query live report",
+            "media": "media live report",
+            "insight": "insight live report",
+        }
+        assert updated_task.status == "completed"
+        assert updated_task.progress == 100
+        assert updated_task.final_report
+        assert updated_task.html_report == "<html><body>ok</body></html>"
+        assert updated_task.news_digest == []
+        assert updated_task.agent_status["report"] == "done"
+        assert updated_task.agent_metrics["report"].status == "done"
+    finally:
+        analysis_route._task_registry.pop(task_id, None)
+
+
+
+def test_analysis_team_finishes_without_waiting_for_slow_digest() -> None:
+    asyncio.run(_assert_analysis_team_does_not_wait_for_digest_before_finishing())
+
+
+async def _assert_degraded_analysis_html_keeps_real_source_facts() -> None:
+    from backend.api.routes import analysis as analysis_route
+    from backend.analysis.agents.base import AgentState, Paragraph, SearchResult
+    from backend.models.analysis import AnalysisTask
+
+    task_id = f"task_source_fact_html_{uuid.uuid4().hex[:8]}"
+    query = "台海局势升级后的舆论演化"
+    task = AnalysisTask(
+        task_id=task_id,
+        query=query,
+        status="running",
+        progress=0,
+        agent_status={"query": "queued", "media": "queued", "insight": "queued", "report": "queued"},
+        agent_metrics=analysis_route._build_initial_agent_metrics(),
+        matched_terms=analysis_route._extract_query_terms(query),
+        sections=analysis_route._build_initial_sections(query, analysis_route._extract_query_terms(query)),
+        timeline=[],
+        ui_message="测试中",
+    )
+    analysis_route._task_registry[task_id] = task
+
+    class FakeLLMClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class FakeStateFactory:
+        @staticmethod
+        def build(title: str, source: str, url: str, summary: str, paragraph_title: str, published_at: str) -> AgentState:
+            paragraph = Paragraph(title=paragraph_title, order=0)
+            paragraph.add_result(
+                SearchResult(
+                    query=title,
+                    url=url,
+                    title=title,
+                    content=summary,
+                    score=0.9,
+                    timestamp=datetime.fromisoformat(published_at),
+                )
+            )
+            paragraph.latest_summary = f"{title} 摘要"
+            paragraph.is_completed = True
+            return AgentState(
+                query=title,
+                report_title=f"关于{title}的深度研究报告",
+                paragraphs=[paragraph],
+                final_report=f"## {source}\n\n{summary}",
+            )
+
+    class FakeQueryAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def research(self, query: str):
+            return FakeStateFactory.build(
+                title="台海军演进入新阶段",
+                source="新华社",
+                url="https://news.example.com/query",
+                summary="公开报道提到多海域联动演训与外围部署变化。",
+                paragraph_title="事件进展",
+                published_at="2026-04-12T09:30:00",
+            )
+
+    class FakeMediaAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def research(self, query: str):
+            raise RuntimeError("media unavailable")
+
+    class FakeInsightAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def research(self, query: str):
+            raise RuntimeError("insight unavailable")
+
+    class FakeReportAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def generate(self, **kwargs):
+            raise AssertionError("degraded path should skip report llm")
+
+    def digest(_: str):
+        return [
+            {
+                "title": "监控源提示区域热度继续上升",
+                "summary": "监控新闻补充了外围平台热度与跨区域传播线索。",
+                "source": "OrcaFish Monitor",
+                "country": "TWN",
+                "published_at": "2026-04-12 10:15",
+                "signal_type": "alert",
+            }
+        ]
+
+    with patch("backend.llm.client.LLMClient", FakeLLMClient), \
+        patch("backend.analysis.agents.query.QueryAgent", FakeQueryAgent), \
+        patch("backend.analysis.agents.media.MediaAgent", FakeMediaAgent), \
+        patch("backend.analysis.agents.insight.InsightAgent", FakeInsightAgent), \
+        patch("backend.analysis.report.agent.ReportAgent", FakeReportAgent), \
+        patch("backend.api.routes.analysis._build_fallback_news_digest", side_effect=digest):
+        await analysis_route._run_agent_team(task_id, query)
+
+    updated_task = analysis_route._task_registry[task_id]
+    try:
+        assert updated_task.status == "degraded"
+        assert updated_task.source_count >= 2
+        assert "台海军演进入新阶段" in updated_task.final_report
+        assert "新华社" in updated_task.final_report
+        assert "2026-04-12 09:30" in updated_task.final_report
+        assert "监控源提示区域热度继续上升" in updated_task.final_report
+        assert "公开来源摘录" in updated_task.html_report
+        assert "台海军演进入新阶段" in updated_task.html_report
+        assert "2026-04-12 09:30" in updated_task.html_report
+        assert "查看原始链接" in updated_task.html_report
+        assert "https://news.example.com/query" in updated_task.html_report
+    finally:
+        analysis_route._task_registry.pop(task_id, None)
+
+
+
+def test_degraded_analysis_html_keeps_real_source_facts() -> None:
+    asyncio.run(_assert_degraded_analysis_html_keeps_real_source_facts())
 
 
 async def _assert_delete_run_stops_runner() -> None:

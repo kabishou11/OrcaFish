@@ -18,6 +18,8 @@ _wm_running = False
 _wm_task: Optional[asyncio.Task] = None
 _wm_last_poll: Optional[datetime] = None
 _wm_focal_points: List[FocalPoint] = []
+_wm_monitor_snapshot_cache: Optional[dict] = None
+_wm_cii_payload_cache: Optional[dict] = None
 
 
 def _normalize_iso(iso: str) -> str:
@@ -64,6 +66,47 @@ def _build_monitor_snapshot(domain: Optional[str] = None) -> dict:
     }
 
 
+def _refresh_monitor_snapshot_cache() -> dict:
+    global _wm_monitor_snapshot_cache
+    _wm_monitor_snapshot_cache = _build_monitor_snapshot()
+    return _wm_monitor_snapshot_cache
+
+
+def _get_monitor_snapshot() -> dict:
+    return _wm_monitor_snapshot_cache or _refresh_monitor_snapshot_cache()
+
+
+def _build_enriched_cii_payload() -> dict:
+    scores = _cii_engine.calculate()
+    watchlist_map = {
+        item["iso"]: item
+        for item in _signal_aggregator.get_country_watchlist(limit=40)
+    }
+    enriched_scores: dict[str, dict] = {}
+    for iso, score in scores.items():
+        details = watchlist_map.get(iso, {})
+        enriched_scores[iso] = {
+            **score,
+            "monitoring": details,
+        }
+    return {
+        "scores": enriched_scores,
+        "watchlist": list(watchlist_map.values())[:12],
+        "monitor": _get_monitor_snapshot(),
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+
+
+def _refresh_cii_payload_cache() -> dict:
+    global _wm_cii_payload_cache
+    _wm_cii_payload_cache = _build_enriched_cii_payload()
+    return _wm_cii_payload_cache
+
+
+def _get_cii_payload() -> dict:
+    return _wm_cii_payload_cache or _refresh_cii_payload_cache()
+
+
 def _build_country_reasoning(
     normalized_iso: str,
     cluster,
@@ -106,7 +149,8 @@ def _build_country_reasoning(
 
 def _build_country_context(iso: str) -> dict:
     normalized_iso = _normalize_iso(iso)
-    scores = _cii_engine.calculate()
+    cii_payload = _get_cii_payload()
+    scores = cii_payload.get("scores", {})
     if normalized_iso not in scores:
         raise HTTPException(status_code=404, detail="Country not found")
 
@@ -159,7 +203,7 @@ def _build_country_context(iso: str) -> dict:
     news_count = len(news_items)
     signal_count = len(country_signals)
     focal_count = len(focal_points)
-    monitor_summary = _build_monitor_snapshot()
+    monitor_summary = _get_monitor_snapshot()
 
     narrative_parts = [
         f"{country_name} 当前 CII 为 {country_score_value:.1f}，处于{country_level}风险水平。",
@@ -344,37 +388,44 @@ async def _run_monitor_agent() -> None:
     _wm_focal_points = fallback
 
 
+def _run_monitor_poll_cycle() -> None:
+    _signal_aggregator.poll_external_sources()
+    _sync_cii_from_signals()
+    _refresh_monitor_snapshot_cache()
+    _refresh_cii_payload_cache()
+
+
 @router.get("/world-monitor/status")
 async def get_wm_status() -> dict:
     """Get World Monitor polling status"""
-    return _build_monitor_snapshot()
+    return _get_monitor_snapshot()
 
 
 @router.post("/world-monitor/start")
 async def start_wm() -> dict:
     """Start the World Monitor background polling loop"""
-    global _wm_running, _wm_task
+    global _wm_running, _wm_task, _wm_last_poll
     if _wm_running:
         return {"status": "already_running"}
     _wm_running = True
+    _wm_last_poll = datetime.now(UTC)
+    _refresh_monitor_snapshot_cache()
+    _refresh_cii_payload_cache()
 
     async def poll_loop():
         global _wm_last_poll
         while _wm_running:
             try:
                 _wm_last_poll = datetime.now(UTC)
-                _signal_aggregator.poll_external_sources()
-                _sync_cii_from_signals()
+                await asyncio.to_thread(_run_monitor_poll_cycle)
                 await _run_monitor_agent()
+                _refresh_monitor_snapshot_cache()
+                _refresh_cii_payload_cache()
             except Exception:
                 pass
             await asyncio.sleep(15)
 
     _wm_task = asyncio.create_task(poll_loop())
-    _wm_last_poll = datetime.now(UTC)
-    _signal_aggregator.poll_external_sources()
-    _sync_cii_from_signals()
-    await _run_monitor_agent()
     return {"status": "started"}
 
 
@@ -386,30 +437,15 @@ async def stop_wm() -> dict:
     if _wm_task:
         _wm_task.cancel()
         _wm_task = None
+    _refresh_monitor_snapshot_cache()
+    _refresh_cii_payload_cache()
     return {"status": "stopped"}
 
 
 @router.get("/cii")
 async def get_cii_scores() -> dict:
     """Get CII scores for all monitored countries"""
-    scores = _cii_engine.calculate()
-    watchlist_map = {
-        item["iso"]: item
-        for item in _signal_aggregator.get_country_watchlist(limit=40)
-    }
-    enriched_scores: dict[str, dict] = {}
-    for iso, score in scores.items():
-        details = watchlist_map.get(iso, {})
-        enriched_scores[iso] = {
-            **score,
-            "monitoring": details,
-        }
-    return {
-        "scores": enriched_scores,
-        "watchlist": list(watchlist_map.values())[:12],
-        "monitor": _build_monitor_snapshot(),
-        "timestamp": datetime.now(UTC).isoformat(),
-    }
+    return _get_cii_payload()
 
 
 @router.get("/cii/{iso}")

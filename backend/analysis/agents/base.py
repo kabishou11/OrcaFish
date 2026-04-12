@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlparse
 from backend.llm.client import LLMClient
 
 
@@ -47,6 +48,26 @@ class Paragraph:
 
 
 @dataclass
+class AgentSourceMetrics:
+    """Aggregated source-quality metrics for one agent run."""
+
+    result_count: int = 0
+    unique_source_count: int = 0
+    enriched_result_count: int = 0
+    paragraph_with_sources: int = 0
+    paragraph_count: int = 0
+    max_paragraph_sources: int = 0
+
+    @property
+    def has_real_sources(self) -> bool:
+        return self.unique_source_count > 0 or self.result_count > 0
+
+    @property
+    def is_dense(self) -> bool:
+        return self.unique_source_count >= 3 or self.result_count >= 4 or self.enriched_result_count >= 2
+
+
+@dataclass
 class AgentState:
     """Full research session state."""
 
@@ -54,9 +75,109 @@ class AgentState:
     report_title: str = ""
     paragraphs: list[Paragraph] = field(default_factory=list)
     final_report: str = ""
+    source_metrics: AgentSourceMetrics = field(default_factory=AgentSourceMetrics)
     is_completed: bool = False
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
+
+
+def _source_label_from_url(url: str) -> str:
+    host = urlparse(url).netloc.lower().strip()
+    if host.startswith("www."):
+        host = host[4:]
+    return host or "外部来源"
+
+
+def _format_source_timestamp(timestamp: datetime | str | None) -> str:
+    if isinstance(timestamp, str):
+        raw = timestamp.strip()
+        if not raw:
+            return ""
+        try:
+            timestamp = datetime.fromisoformat(raw)
+        except ValueError:
+            return raw
+    if isinstance(timestamp, datetime):
+        return timestamp.strftime("%Y-%m-%d %H:%M")
+    return ""
+
+
+def build_source_facts_from_results(
+    results: list[SearchResult],
+    limit: int = 8,
+    paragraph_title: str = "",
+) -> list[dict[str, str]]:
+    facts: list[dict[str, str]] = []
+    seen: set[str] = set()
+    ranked_results = sorted(
+        results,
+        key=lambda item: (
+            -(len((item.content or "").strip())),
+            -(item.score or 0.0),
+            -(item.timestamp.timestamp() if isinstance(item.timestamp, datetime) else 0.0),
+        ),
+    )
+    for result in ranked_results:
+        title = (result.title or "").strip()
+        summary = " ".join((result.content or "").split())[:220]
+        identity = (result.url or "").strip() or title or summary
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        facts.append(
+            {
+                "title": title or (summary[:48] if summary else "未命名来源"),
+                "source": _source_label_from_url(result.url),
+                "url": (result.url or "").strip(),
+                "summary": summary or "检索已命中该来源，但正文摘要仍在补全。",
+                "paragraph_title": paragraph_title,
+                "published_at": _format_source_timestamp(result.timestamp),
+            }
+        )
+        if len(facts) >= limit:
+            break
+    return facts
+
+
+def extract_source_facts(state: AgentState, limit: int = 8) -> list[dict[str, str]]:
+    facts: list[dict[str, str]] = []
+    seen: set[str] = set()
+    ordered_paragraphs = sorted(state.paragraphs, key=lambda item: item.order)
+    for para in ordered_paragraphs:
+        for fact in build_source_facts_from_results(para.search_history, limit=limit, paragraph_title=para.title):
+            identity = fact["url"] or f"{fact['source']}::{fact['title']}"
+            if identity in seen:
+                continue
+            seen.add(identity)
+            facts.append(fact)
+            if len(facts) >= limit:
+                return facts
+    return facts
+
+
+def calculate_source_metrics(state: AgentState) -> AgentSourceMetrics:
+    metrics = AgentSourceMetrics()
+    metrics.paragraph_count = len(state.paragraphs)
+    unique_sources: set[str] = set()
+    for para in state.paragraphs:
+        para_source_count = 0
+        for result in para.search_history:
+            identity = (result.url or "").strip()
+            if identity:
+                unique_sources.add(identity)
+            else:
+                title_identity = (result.title or "").strip()
+                if title_identity:
+                    unique_sources.add(f"title::{title_identity}")
+            metrics.result_count += 1
+            if len((result.content or "").strip()) >= 200:
+                metrics.enriched_result_count += 1
+            para_source_count += 1
+        if para_source_count > 0:
+            metrics.paragraph_with_sources += 1
+        metrics.max_paragraph_sources = max(metrics.max_paragraph_sources, para_source_count)
+    metrics.unique_source_count = len(unique_sources)
+    return metrics
 
 
 class DeepSearchAgent(ABC):
@@ -352,6 +473,8 @@ class DeepSearchAgent(ABC):
                 return para
 
         await asyncio.gather(*[process_one(p) for p in state.paragraphs])
+
+        state.source_metrics = calculate_source_metrics(state)
 
         # Step 3: Format final report
         state.final_report = await self._format_report(state)
