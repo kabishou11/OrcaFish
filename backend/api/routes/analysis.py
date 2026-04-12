@@ -794,7 +794,7 @@ async def trigger_analysis(req: AnalysisRequest) -> dict:
         task_id=task_id,
         query=req.query,
         status="running",
-        progress=0,
+        progress=3,
         agent_status={"query": "queued", "media": "queued", "insight": "queued", "report": "queued"},
         agent_metrics=_build_initial_agent_metrics(),
         matched_terms=_extract_query_terms(req.query),
@@ -825,6 +825,7 @@ async def trigger_analysis(req: AnalysisRequest) -> dict:
         "sections": [_export_model(section) for section in task.sections],
         "timeline": [_export_model(event) for event in task.timeline],
         "ui_message": task.ui_message,
+        "last_update_at": task.last_update_at.isoformat() if task.last_update_at else None,
         "message": "多智能体分析已提交，Query + Media + Insight 并行运行中，请通过 /api/analysis/{task_id} 查询结果",
     }
 
@@ -837,6 +838,7 @@ async def get_analysis_task(task_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Task not found")
     return {
         "task_id": task.task_id,
+        "query": task.query,
         "status": task.status,
         "progress": task.progress,
         "data_quality": task.data_quality,

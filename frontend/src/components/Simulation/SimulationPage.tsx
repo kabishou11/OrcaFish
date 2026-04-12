@@ -628,6 +628,19 @@ interface CountryContextDraftSummary {
   top_headlines?: string[]
 }
 
+function buildGraphSnapshotSignature(graph: { nodes: KGNode[]; edges: KGLink[] } | null | undefined) {
+  if (!graph) return ''
+  const nodeSignature = [...(graph.nodes ?? [])]
+    .map((node) => `${node.id}|${node.type}|${node.name}|${(node.labels ?? []).join(',')}`)
+    .sort()
+    .join('||')
+  const edgeSignature = [...(graph.edges ?? [])]
+    .map((edge) => `${String(edge.source)}>${String(edge.target)}|${edge.type}|${edge.name}|${edge.weight ?? ''}`)
+    .sort()
+    .join('||')
+  return `${graph.nodes.length}::${graph.edges.length}::${nodeSignature}##${edgeSignature}`
+}
+
 type SimulationDraftWithCountryContext = SimulationDraft & {
   country_context?: CountryContextDraftSummary
   countryContext?: CountryContextDraftSummary
@@ -658,6 +671,9 @@ export default function SimulationPage() {
   const [graphData, setGraphData] = useState<{ nodes: KGNode[]; edges: KGLink[] } | null>(null)
   const [graphLoading, setGraphLoading] = useState(false)
   const [graphRefreshKey, setGraphRefreshKey] = useState(0)
+  const graphSignatureRef = useRef('')
+  const lastGraphRunIdRef = useRef<string | null>(null)
+  const lastGraphRefreshKeyRef = useRef(0)
   const draftPayload = draft as SimulationDraftWithCountryContext | null
   const draftCountryContext =
     draftPayload?.country_context ??
@@ -689,37 +705,55 @@ export default function SimulationPage() {
   // Fetch graph data when selected run changes or while prediction keeps evolving
   useEffect(() => {
     if (!selectedRun?.run_id) {
+      graphSignatureRef.current = ''
+      lastGraphRunIdRef.current = null
+      lastGraphRefreshKeyRef.current = graphRefreshKey
       setGraphData(null)
       setGraphLoading(false)
       return
     }
 
+    const runChanged = lastGraphRunIdRef.current !== selectedRun.run_id
+    const refreshRequested = lastGraphRefreshKeyRef.current !== graphRefreshKey
+    lastGraphRunIdRef.current = selectedRun.run_id
+    lastGraphRefreshKeyRef.current = graphRefreshKey
+
     let active = true
 
-    const loadGraph = async () => {
+    const loadGraph = async (force = false) => {
       setGraphLoading(true)
       try {
         const response = await fetch(`/api/simulation/runs/${selectedRun.run_id}/graph`)
         if (!response.ok) throw new Error('graph fetch failed')
         const data = await response.json() as { nodes?: KGNode[]; edges?: KGLink[] }
         if (!active) return
-        setGraphData({
+        const nextGraph = {
           nodes: Array.isArray(data.nodes) ? data.nodes : [],
           edges: Array.isArray(data.edges) ? data.edges : [],
-        })
+        }
+        const nextSignature = buildGraphSnapshotSignature(nextGraph)
+        if (force || nextSignature !== graphSignatureRef.current) {
+          graphSignatureRef.current = nextSignature
+          setGraphData(nextGraph)
+        }
       } catch {
         if (!active) return
+        graphSignatureRef.current = ''
         setGraphData(null)
       } finally {
         if (active) setGraphLoading(false)
       }
     }
 
-    setGraphData(null)
-    void loadGraph()
+    if (runChanged) {
+      graphSignatureRef.current = ''
+      setGraphData(null)
+    }
+
+    void loadGraph(runChanged || refreshRequested)
     const id = setInterval(() => {
       void loadGraph()
-    }, selectedRun.status === 'running' ? 3000 : 10000)
+    }, selectedRun.status === 'running' ? 5000 : 12000)
 
     return () => {
       active = false

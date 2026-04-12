@@ -494,10 +494,12 @@ function CountryContextBrief({
 
 export default function AnalysisPage() {
   const navigate = useNavigate()
-  const [query, setQuery] = useState('')
-  const [loading, setLoading] = useState(false)
   const result = useAnalysisStore((s) => s.result)
   const setResult = useAnalysisStore((s) => s.setResult)
+  const storedDraftQuery = useAnalysisStore((s) => s.draftQuery)
+  const setDraftQuery = useAnalysisStore((s) => s.setDraftQuery)
+  const [query, setQuery] = useState(storedDraftQuery)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const injectSignal = useIntelligenceStore((s) => s.injectSignal)
   const injectedSignals = useIntelligenceStore((s) => s.injectedSignals)
@@ -505,8 +507,9 @@ export default function AnalysisPage() {
   const setSimulationDraft = useSimulationDraftStore((s) => s.setDraft)
   const latestInjectedSignal = injectedSignals[0] ?? null
   const latestCountryHeadline = activeCountryContext?.top_headlines?.[0] ?? null
+  const activeQuery = query.trim() || result?.query?.trim() || storedDraftQuery.trim()
 
-  const combinedText = useMemo(() => getCombinedText(result, query), [result, query])
+  const combinedText = useMemo(() => getCombinedText(result, activeQuery), [activeQuery, result])
   const keywordRows = useMemo(() => extractKeywords(result, combinedText).map(([label, value], index) => ({
     label,
     value,
@@ -529,7 +532,7 @@ export default function AnalysisPage() {
   const degraded = result?.status === 'degraded' || result?.data_quality === 'degraded'
 
   const workflowSteps: WorkflowGuideStep[] = [
-    { label: 'STEP 1', title: '先输入议题', description: '输入要追踪的地区、政策或冲突议题，系统会立即发起并行研判。', status: loading ? 'done' : 'active' as const },
+    { label: 'STEP 1', title: '先输入议题', description: '输入要追踪的地区、政策或冲突议题，系统会立即发起并行研判。', status: activeQuery ? 'done' : 'active' as const },
     { label: 'STEP 2', title: '看多路结果依次到达', description: '搜索、媒体、洞察三条流会分段返回，不需要等所有内容一次性生成。', status: result?.status === 'running' || result?.status === 'assembling' ? 'active' : result?.status === 'completed' || result?.status === 'degraded' ? 'done' : 'pending' as const },
     { label: 'STEP 3', title: '启动未来预测', description: '综合结论稳定后，直接把摘要与预测任务带入未来推演工作台。', status: result?.status === 'completed' || result?.status === 'degraded' ? 'active' : 'pending' as const },
   ]
@@ -539,7 +542,19 @@ export default function AnalysisPage() {
   }, [result?.status])
 
   useEffect(() => {
-    if (!result?.task_id || result.status === 'completed' || result.status === 'failed' || result.status === 'degraded') return
+    const restoredQuery = storedDraftQuery || result?.query || ''
+    if (restoredQuery && !query.trim()) {
+      setQuery(restoredQuery)
+    }
+  }, [query, result?.query, storedDraftQuery])
+
+  useEffect(() => {
+    if (query === storedDraftQuery) return
+    setDraftQuery(query)
+  }, [query, setDraftQuery, storedDraftQuery])
+
+  useEffect(() => {
+    if (!result?.task_id || result.task_id.startsWith('pending-') || result.task_id.startsWith('failed-') || result.status === 'completed' || result.status === 'failed' || result.status === 'degraded') return
     let cancelled = false
     const poll = async () => {
       while (!cancelled) {
@@ -561,8 +576,10 @@ export default function AnalysisPage() {
   }, [result?.task_id, result?.status, setResult])
 
   useEffect(() => {
-    if ((result?.status !== 'completed' && result?.status !== 'degraded') || !query.trim()) return
-    const coords = extractSignalCoords(query.trim())
+    if ((result?.status !== 'completed' && result?.status !== 'degraded') || !activeQuery) return
+    const alreadyInjected = injectedSignals.some((signal) => signal.id === `analysis-${result.task_id}`)
+    if (alreadyInjected) return
+    const coords = extractSignalCoords(activeQuery)
     injectSignal({
       id: `analysis-${result.task_id}`,
       type: 'diplomatic',
@@ -570,38 +587,82 @@ export default function AnalysisPage() {
       lon: coords?.lon,
       intensity: 0.9,
       timestamp: new Date().toISOString(),
-      description: `议题研判：${query.trim()}`,
+      description: `议题研判：${activeQuery}`,
       source: 'analysis',
-      query: query.trim(),
+      query: activeQuery,
     })
-  }, [injectSignal, query, result?.status, result?.task_id])
+  }, [activeQuery, injectSignal, injectedSignals, result?.status, result?.task_id])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!query.trim()) return
+    const nextQuery = query.trim()
+    if (!nextQuery) return
     setLoading(true)
     setError(null)
-    setResult(null)
+    setResult({
+      task_id: `pending-${Date.now()}`,
+      query: nextQuery,
+      status: 'running',
+      progress: 2,
+      data_quality: 'unknown',
+      ui_message: '议题已提交，正在创建多代理并行任务。',
+      agent_status: { query: 'queued', media: 'queued', insight: 'queued', report: 'queued' },
+      sections: REPORT_SECTIONS.map((section, index) => ({
+        key: section.key.replace('_report', ''),
+        title: section.title,
+        order: index + 1,
+        status: 'queued',
+        summary: index === 0 ? `正在为“${nextQuery}”锁定公开线索。` : '等待前序结果到达后继续输出。',
+        content: '',
+      })),
+      timeline: [{
+        key: `pending-${Date.now()}`,
+        stage: 'queued',
+        title: '议题已提交',
+        detail: `“${nextQuery}”已送出，系统正在建立搜索、媒体、洞察三路并行任务。`,
+        status: 'running',
+        created_at: new Date().toISOString(),
+      }],
+      last_update_at: new Date().toISOString(),
+    })
     try {
       const res = await fetch('/api/analysis/trigger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: query.trim() }),
+        body: JSON.stringify({ query: nextQuery }),
       })
       if (!res.ok) {
         const err = await res.json()
         throw new Error(err.detail ?? '分析请求失败')
       }
-      setResult(await res.json())
+      const data: AnalysisResult = await res.json()
+      setResult({ ...data, query: data.query ?? nextQuery })
     } catch (err) {
       setError(err instanceof Error ? err.message : '未知错误')
+      setResult({
+        task_id: `failed-${Date.now()}`,
+        query: nextQuery,
+        status: 'failed',
+        progress: 0,
+        error: err instanceof Error ? err.message : '未知错误',
+        ui_message: '议题提交失败，请检查服务后重试。',
+        timeline: [{
+          key: `failed-${Date.now()}`,
+          stage: 'failed',
+          title: '议题提交失败',
+          detail: err instanceof Error ? err.message : '未知错误',
+          status: 'failed',
+          created_at: new Date().toISOString(),
+        }],
+        last_update_at: new Date().toISOString(),
+      })
     } finally {
       setLoading(false)
     }
   }
 
   const handleSendToSimulation = () => {
-    const topic = query.trim() || '议题预测'
+    const topic = activeQuery || '议题预测'
     const seed = result?.final_report?.trim() || result?.query_report?.trim() || stripHtml(result?.html_report) || topic
     setSimulationDraft({
       name: `${topic} 未来预测`,
@@ -698,7 +759,7 @@ export default function AnalysisPage() {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', justifyContent: 'space-between' }}>
                   <button type="submit" className="btn btn-primary" disabled={loading || !query.trim()}>
-                    {loading ? <><div className="spinner-sm" /> 发送中...</> : <><PlayIcon /> 启动议题研判</>}
+                    {loading ? <><div className="spinner-sm" /> 已提交，正在接入阶段反馈...</> : <><PlayIcon /> 启动议题研判</>}
                   </button>
                   <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>当前阶段: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{currentStage}</span></div>
                 </div>
@@ -718,6 +779,11 @@ export default function AnalysisPage() {
                 <div style={{ marginTop: 6, fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
                   {result?.degraded_reason || currentStage}
                 </div>
+                {result && result.status !== 'completed' && result.status !== 'failed' && (
+                  <div style={{ marginTop: 8, fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                    即使临时切换到别的页面，回来后也会继续显示当前议题的阶段进度与已到达内容。
+                  </div>
+                )}
               </div>
 
               <div style={{ height: 6, borderRadius: 999, overflow: 'hidden', background: 'var(--bg-overlay)' }}>

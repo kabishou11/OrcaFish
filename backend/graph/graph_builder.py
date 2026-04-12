@@ -191,7 +191,7 @@ class GraphBuilder:
                 for episode in episodes
                 if isinstance(episode, dict)
                 for label in (episode.get("labels") or [])
-                if isinstance(label, str) and label not in {"Entity", "Node"}
+                if isinstance(label, str) and label not in {"Entity", "Node", "Episode"}
             }
         )
         return GraphInfo(
@@ -201,7 +201,7 @@ class GraphBuilder:
             entity_types=entity_types,
         )
 
-    def _fetch_episodes(self, graph_id: str, last_n: int = 120) -> list[dict[str, Any]]:
+    def _fetch_episodes(self, graph_id: str, last_n: int = 100) -> list[dict[str, Any]]:
         if self._mock:
             return []
         try:
@@ -277,7 +277,7 @@ class GraphBuilder:
             node_map[node_id] = record
             nodes.append(record)
             for label in labels:
-                if label not in {"Entity", "Node"}:
+                if label not in {"Entity", "Node", "Episode"}:
                     entity_types.add(label)
 
         def add_edge(source: str, target: str, edge_type: str, fact: str, created_at: Optional[str], episode_uuid: Optional[str]) -> None:
@@ -388,7 +388,7 @@ class GraphBuilder:
                         for node in remote_data["nodes"]
                         if isinstance(node, dict)
                         for label in (node.get("labels") or [])
-                        if str(label) not in {"Entity", "Node"}
+                        if str(label) not in {"Entity", "Node", "Episode"}
                     }
                 )
             return remote_data

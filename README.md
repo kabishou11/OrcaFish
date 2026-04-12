@@ -269,20 +269,28 @@ CRAWL4AI_TOKEN=
 2. `GRAPHITI_BASE_URL=http://localhost:8003`
 3. `ZEP_API_SECRET` 与本地配置一致
 
-### 8.2 方案 B：使用仓库自带 compose
+### 8.2 方案 B：使用仓库根目录自带 `zep-local/`（默认推荐）
 
-仓库中保留了参考编排：
+`backend/main.py` 默认会优先尝试这一路径：
 
-- `zep/legacy/docker-compose.ce.yaml`
+- `zep-local/docker-compose.ce.yaml`
+- 若不存在，再回退 `zep/legacy/docker-compose.ce.yaml`
 
-它用于启动：
+第一次按下面做即可复刻：
+
+1. 复制本地服务环境文件：`Copy-Item zep-local\.env.example zep-local\.env`
+2. 打开 `zep-local/zep.yaml`，确认或改掉 `api_secret`
+3. 把项目根目录 `.env` 中的 `ZEP_API_SECRET` 改成同一个值
+4. 在项目根目录执行：`docker compose -f zep-local/docker-compose.ce.yaml up -d`
+
+这套默认会拉起：
 
 - `zep`
 - `graphiti`
 - `postgres`
 - `neo4j`
 
-如果你走这一套，需要先补齐 `zep/legacy` 下的环境变量文件，再执行 `docker compose up -d`。
+如果你的仓库里暂时没有 `zep-local/`，再使用旧的 `zep/legacy/` 路径。
 
 ### 8.3 本地服务健康检查
 
