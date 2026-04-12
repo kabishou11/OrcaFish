@@ -2,7 +2,7 @@
 
 > 面向地缘风险与舆情推演的统一工作台，主链路为 `全球观测 -> 议题研判 -> 未来预测 -> 自动流程`
 
-[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5+-3178C6.svg)](https://www.typescriptlang.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-18-61DAFB.svg)](https://react.dev/)
@@ -117,6 +117,11 @@ orcafish/
 │  └─ test_backend_smoke.py
 ├─ docs/
 │  └─ DEPLOYMENT.md
+├─ zep-local/
+│  ├─ docker-compose.yml
+│  ├─ .env.example
+│  ├─ zep.yaml
+│  └─ README.md
 ├─ .env.example
 └─ README.md
 ```
@@ -128,7 +133,7 @@ orcafish/
 ### 5.1 必需
 
 - Windows 10/11、Linux 或 macOS
-- Python `3.11+`
+- Python `3.13`
 - Node.js `18+`
 - `pnpm`
 
@@ -161,8 +166,9 @@ cd orcafish
 ### 6.2 创建后端虚拟环境
 
 ```powershell
-python -m venv .venv
+py -3.13 -m venv .venv
 .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
@@ -255,13 +261,43 @@ CRAWL4AI_TOKEN=
 
 ## 8. 本地依赖服务
 
-### 8.1 方案 A：直接复用你现成的 `zep-local`
+### 8.1 方案 A：使用仓库内的 `zep-local`
 
-如果你已经有本地 `zep-local`，例如：
+仓库现在自带一个可直接启动的本地目录：
 
-- `F:\3work\1风险预测\zep-local`
+- `zep-local/`
 
-优先直接复用，不建议重复再起一套。
+适合第一次部署的人直接照着跑，不用再去翻外部仓库结构。
+
+启动前只需要做两件事：
+
+1. 复制模板：`Copy-Item zep-local/.env.example zep-local/.env`
+2. 把 `zep-local/.env` 里的 `OPENAI_API_KEY` 改成你自己的兼容模型 Key
+
+然后进入目录启动：
+
+```powershell
+cd zep-local
+docker compose up -d
+```
+
+默认端口：
+
+- `8000` Zep CE
+- `8003` Graphiti
+- `5432` Postgres
+- `7474` Neo4j HTTP
+- `7687` Neo4j Bolt
+
+说明：
+
+- `zep-local/.env` 是本地私密文件，不要提交进仓库
+- `zep-local/zep.yaml` 当前是示例配置，第一次部署时请把 `api_secret` 换成你自己的本地 secret
+- 记得把项目根目录 `.env` 里的 `ZEP_API_SECRET` 改成同一个值
+
+### 8.2 方案 B：直接复用你现成的 `zep-local`
+
+如果你已经有另一套长期运行的本地 `zep-local`，也可以不使用仓库里的这一份。
 
 你只需要确认：
 
@@ -269,7 +305,7 @@ CRAWL4AI_TOKEN=
 2. `GRAPHITI_BASE_URL=http://localhost:8003`
 3. `ZEP_API_SECRET` 与本地配置一致
 
-### 8.2 方案 B：使用仓库自带 compose
+### 8.3 方案 C：使用历史 `zep` 参考编排
 
 仓库中保留了参考编排：
 
@@ -284,7 +320,7 @@ CRAWL4AI_TOKEN=
 
 如果你走这一套，需要先补齐 `zep/legacy` 下的环境变量文件，再执行 `docker compose up -d`。
 
-### 8.3 本地服务健康检查
+### 8.4 本地服务健康检查
 
 ```powershell
 Test-NetConnection localhost -Port 8000
@@ -326,7 +362,7 @@ pnpm dev
 
 默认访问地址通常为：
 
-- [http://127.0.0.1:5173](http://127.0.0.1:5173)
+- [http://localhost:3000](http://localhost:3000)
 
 如果 Vite 输出了别的地址，以终端输出为准。
 
@@ -355,12 +391,12 @@ Invoke-WebRequest http://localhost:8080/health
 
 ```powershell
 cd F:\1work\OrcFish\orcafish
-.venv\Scripts\python.exe tests\test_backend_smoke.py
+.venv\Scripts\python.exe -m pytest tests\test_backend_smoke.py
 ```
 
 成功标志：
 
-- 输出 `backend-smoke-ok`
+- `12 passed` 或更高
 
 ### 10.3 前端构建检查
 
@@ -411,7 +447,7 @@ pnpm build
 
 建议端口：
 
-- 前端：`5173`
+- 前端：`3000`
 - 后端：`8080`
 - Zep：`8000`
 - Graphiti：`8003`
@@ -564,6 +600,7 @@ pnpm dev
 ## 16. 补充说明
 
 - 详细部署补充仍保留在 [docs/DEPLOYMENT.md](F:/1work/OrcFish/orcafish/docs/DEPLOYMENT.md)
+- 本地 Zep CE / Graphiti 的一步一步启动说明见 [zep-local/README.md](F:/1work/OrcFish/orcafish/zep-local/README.md)
 - 但本 README 现在已经包含完整安装、启动、部署、联调、排障主信息
 - 如果你今晚直接交付，优先按本 README 的“单机演示部署”执行即可
 
