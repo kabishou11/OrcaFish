@@ -360,6 +360,8 @@ pnpm build
 当前版本已经接通了 `Simulation run -> Graphiti/Zep metadata -> 前端图谱接口` 的主闭环，但要准确理解边界：
 
 - `GET /api/simulation/runs/{run_id}/graph` 中的 `project_id`、`graph_id`、`graph_source`、`graph_entity_count`、`graph_relation_count`、`graph_entity_types`、`graph_synced_at` 已来自本地 Graphiti/Zep 同步结果
+- 预测记录当前会在本地持久化，服务重启后可恢复历史 run、状态快照与图谱元数据
+- 仿真报告会补入公开来源摘录，避免只依赖内部推演轨迹判断热点变化
 - 前端页面当前主要消费 `nodes/edges`，而这部分仍保留本地聚合生成与降级回退
 - 因此现在可以说“本地 Zep / Graphiti 已接上并可演示”，但还不应表述成“所有图结构都完全由远端图数据库直出”
 
