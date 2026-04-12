@@ -124,6 +124,7 @@ orcafish/
 │  └─ DEPLOYMENT.md
 ├─ zep-local/
 │  ├─ docker-compose.yml
+│  ├─ docker-compose.ce.yaml
 │  ├─ .env.example
 │  ├─ zep.yaml
 │  └─ README.md

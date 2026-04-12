@@ -152,6 +152,7 @@ extra_body={"reasoning_split": True}
 如果你希望新人拿到仓库后直接启动，现在仓库根目录已经提供：
 
 - `zep-local/docker-compose.yml`
+- `zep-local/docker-compose.ce.yaml`
 - `zep-local/.env.example`
 - `zep-local/zep.yaml`
 - `zep-local/README.md`
