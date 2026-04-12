@@ -2,9 +2,7 @@ from __future__ import annotations
 """OrcaFish MediaAgent — multimodal analysis using Bocha Search API."""
 import os
 import httpx
-from typing import Optional
 from backend.analysis.agents.base import DeepSearchAgent, SearchResult, AgentState
-from backend.analysis.crawl4ai_client import Crawl4AIClient
 from backend.llm.client import LLMClient
 
 
@@ -199,7 +197,6 @@ class MediaAgent(DeepSearchAgent):
         """
         super().__init__(llm_client)
         self.search_tool = BochaSearchTool(bocha_api_key)
-        self.crawl_client = Crawl4AIClient()
 
     async def execute_search(self, query: str) -> list[SearchResult]:
         """
@@ -216,14 +213,4 @@ class MediaAgent(DeepSearchAgent):
         except Exception:
             results = []
 
-        enriched: list[SearchResult] = []
-        for item in results:
-            content = await self.crawl_client.enrich_content(item.url, fallback=item.content)
-            enriched.append(SearchResult(
-                query=item.query,
-                title=item.title,
-                url=item.url,
-                content=content,
-                score=item.score,
-            ))
-        return enriched
+        return results

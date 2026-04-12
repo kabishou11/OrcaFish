@@ -1,7 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useSimulationDraftStore } from '../../stores/simulationDraftStore'
-import { useIntelligenceStore, type ObservationCountryContext } from '../../stores/intelligenceStore'
+import {
+  useIntelligenceStore,
+  type IntelligenceCIIResponse,
+  type IntelligenceFocalPoint,
+  type IntelligenceNewsItem,
+  type IntelligenceWMStatus,
+  type ObservationCountryContext,
+} from '../../stores/intelligenceStore'
 import CountryWorkbenchCard from '../CountryWorkbenchCard'
 
 interface CIIOverview {
@@ -17,23 +24,17 @@ interface RawCIIScore {
   name?: string
 }
 
-interface RawCIIResponse {
+interface RawCIIResponse extends IntelligenceCIIResponse {
   scores?: Record<string, RawCIIScore>
   timestamp?: string
 }
 
-interface WMStatus {
-  running: boolean
-  last_poll: string | null
-  poll_interval: number
-  cii_threshold: number
-  data_sources?: string[]
-}
+interface WMStatus extends IntelligenceWMStatus {}
 
 interface SimRun { run_id: string; status: string; rounds_completed: number; created_at: string }
 interface Pipeline { pipeline_id: string; stage: string; country_name: string; cii_score: number; created_at: string }
-interface NewsItem { id: string; title: string; summary?: string; country_iso?: string; signal_type?: string; published_at?: string; source?: string }
-interface FocalPoint { entity_id: string; focal_score: number; urgency: string; narrative: string; top_headlines: string[] }
+interface NewsItem extends IntelligenceNewsItem {}
+interface FocalPoint extends IntelligenceFocalPoint { entity_id: string; focal_score: number; urgency: string; narrative: string; top_headlines: string[] }
 interface CountryContextPayload {
   iso: string
   country: { name: string; score: number; level: string }
@@ -204,86 +205,92 @@ function MiniProgress({ value, max, label, color }: { value: number; max: number
   )
 }
 
+function toCiiOverview(payload: RawCIIResponse): CIIOverview {
+  const scoreEntries = Object.entries(payload.scores ?? {})
+    .map(([iso, value]) => ({
+      iso,
+      score: value.score ?? 0,
+      level: value.level ?? 'low',
+    }))
+    .sort((a, b) => b.score - a.score)
+
+  const avgScore = scoreEntries.length > 0
+    ? scoreEntries.reduce((sum, item) => sum + item.score, 0) / scoreEntries.length
+    : 0
+  const derivedLevel =
+    avgScore >= 80 ? 'critical' :
+    avgScore >= 65 ? 'high' :
+    avgScore >= 45 ? 'elevated' :
+    avgScore >= 25 ? 'normal' :
+    'low'
+
+  return {
+    cii: avgScore,
+    level: derivedLevel,
+    countries: scoreEntries.map(({ iso, score }) => ({ iso, score })),
+    timestamp: payload.timestamp,
+  }
+}
+
 /* ── Dashboard ──────────────────────────────────────────────────────── */
 export default function Dashboard() {
   const navigate = useNavigate()
   const setDraft = useSimulationDraftStore((state) => state.setDraft)
   const injectSignal = useIntelligenceStore((state) => state.injectSignal)
   const setActiveCountryContext = useIntelligenceStore((state) => state.setActiveCountryContext)
-  const [cii, setCii] = useState<CIIOverview | null>(null)
-  const [wmStatus, setWmStatus] = useState<WMStatus | null>(null)
+  const overviewCache = useIntelligenceStore((state) => state.overviewCache)
+  const refreshOverviewCache = useIntelligenceStore((state) => state.refreshOverviewCache)
+  const warmOverviewCache = useIntelligenceStore((state) => state.warmOverviewCache)
+  const ensureWorldMonitorRunning = useIntelligenceStore((state) => state.ensureWorldMonitorRunning)
+  const [cii, setCii] = useState<CIIOverview | null>(overviewCache.cii ? toCiiOverview(overviewCache.cii as RawCIIResponse) : null)
+  const [wmStatus, setWmStatus] = useState<WMStatus | null>(overviewCache.wmStatus)
   const [simRuns, setSimRuns] = useState<SimRun[]>([])
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
-  const [newsItems, setNewsItems] = useState<NewsItem[]>([])
-  const [focalPoints, setFocalPoints] = useState<FocalPoint[]>([])
+  const [newsItems, setNewsItems] = useState<NewsItem[]>(overviewCache.newsItems)
+  const [focalPoints, setFocalPoints] = useState<FocalPoint[]>(overviewCache.focalPoints)
   const [loading, setLoading] = useState(true)
   const [ciiHistory, setCiiHistory] = useState<number[]>([])
+  const overviewHistoryRef = useRef<string | null>(overviewCache.cii?.timestamp ?? null)
+
+  useEffect(() => {
+    const cachePayload = overviewCache.cii as RawCIIResponse | null
+    const nextOverview = cachePayload ? toCiiOverview(cachePayload) : null
+
+    setCii(nextOverview)
+    setWmStatus(overviewCache.wmStatus)
+    setNewsItems(overviewCache.newsItems)
+    setFocalPoints(overviewCache.focalPoints)
+
+    if (nextOverview?.timestamp && overviewHistoryRef.current !== nextOverview.timestamp) {
+      overviewHistoryRef.current = nextOverview.timestamp
+      setCiiHistory(prev => {
+        const next = [...prev, nextOverview.cii]
+        return next.length > 7 ? next.slice(-7) : next
+      })
+    }
+  }, [overviewCache])
 
   useEffect(() => {
     const fetchAll = async () => {
       try {
-        const [ciiRes, wmRes, simRes, pipeRes, newsRes, focalRes] = await Promise.all([
-          fetch('/api/intelligence/cii'),
-          fetch('/api/intelligence/world-monitor/status'),
+        await ensureWorldMonitorRunning()
+        await warmOverviewCache()
+
+        const [overviewResult, simRes, pipeRes] = await Promise.all([
+          refreshOverviewCache(),
           fetch('/api/simulation/runs'),
           fetch('/api/pipeline/'),
-          fetch('/api/intelligence/news?limit=18'),
-          fetch('/api/intelligence/focal-points'),
         ])
-        if (ciiRes.ok) {
-          const d = await ciiRes.json() as RawCIIResponse
-          const scoreEntries = Object.entries(d.scores ?? {})
-            .map(([iso, value]) => ({
-              iso,
-              score: value.score ?? 0,
-              level: value.level ?? 'low',
-            }))
-            .sort((a, b) => b.score - a.score)
-
-          const avgScore = scoreEntries.length > 0
-            ? scoreEntries.reduce((sum, item) => sum + item.score, 0) / scoreEntries.length
-            : 0
-          const derivedLevel =
-            avgScore >= 80 ? 'critical' :
-            avgScore >= 65 ? 'high' :
-            avgScore >= 45 ? 'elevated' :
-            avgScore >= 25 ? 'normal' :
-            'low'
-
-          const overview: CIIOverview = {
-            cii: avgScore,
-            level: derivedLevel,
-            countries: scoreEntries.map(({ iso, score }) => ({ iso, score })),
-            timestamp: d.timestamp,
-          }
-
-          setCii(overview)
-          // accumulate history (keep last 7 values for sparkline)
-          setCiiHistory(prev => {
-            const next = [...prev, overview.cii]
-            return next.length > 7 ? next.slice(-7) : next
-          })
-        }
-        if (wmRes.ok) {
-          const status = await wmRes.json()
-          setWmStatus(status)
-          if (!status.running) {
-            await fetch('/api/intelligence/world-monitor/start', { method: 'POST' })
-            const nextStatusRes = await fetch('/api/intelligence/world-monitor/status')
-            if (nextStatusRes.ok) setWmStatus(await nextStatusRes.json())
-          }
-        }
+        void overviewResult
         if (simRes.ok)  { const d = await simRes.json(); setSimRuns(d.runs ?? []) }
         if (pipeRes.ok) { const d = await pipeRes.json(); setPipelines(d.pipelines ?? []) }
-        if (newsRes.ok) { const d = await newsRes.json(); setNewsItems(d.items ?? []) }
-        if (focalRes.ok) { const d = await focalRes.json(); setFocalPoints(d.items ?? []) }
       } catch { /* silent */ }
       setLoading(false)
     }
     fetchAll()
     const t = setInterval(fetchAll, 20000)
     return () => clearInterval(t)
-  }, [])
+  }, [ensureWorldMonitorRunning, refreshOverviewCache, warmOverviewCache])
 
   const levelBadgeClass =
     cii?.level === 'critical' ? 'badge-critical' :

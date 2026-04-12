@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
 
+from backend.analysis.agents.base import extract_source_facts
 from backend.config import settings
 from backend.models.analysis import (
     AnalysisAgentState,
@@ -91,6 +92,15 @@ def _build_fallback_news_digest(query: str) -> list[dict[str, str]]:
     ]
 
 
+def _safe_extract_source_facts(state: object, limit: int = 4) -> list[dict[str, str]]:
+    if not hasattr(state, "paragraphs"):
+        return []
+    try:
+        return extract_source_facts(state, limit=limit)
+    except Exception:
+        return []
+
+
 def _build_sentiment_hint(text: str) -> dict[str, int]:
     positive_words = ["缓和", "合作", "谈判", "停火", "稳定", "修复", "降温"]
     negative_words = ["升级", "冲突", "制裁", "攻击", "威胁", "危机", "对抗", "紧张"]
@@ -108,6 +118,80 @@ def _build_sentiment_hint(text: str) -> dict[str, int]:
 
 def _strip_md(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").replace("#", "").replace(">", "")).strip()
+
+
+def _coerce_int(value: object) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalize_source_fact(fact: dict[str, str]) -> dict[str, str]:
+    return {
+        "title": str(fact.get("title") or "未命名来源").strip() or "未命名来源",
+        "source": str(fact.get("source") or "外部来源").strip() or "外部来源",
+        "url": str(fact.get("url") or "").strip(),
+        "summary": str(fact.get("summary") or "").strip(),
+        "paragraph_title": str(fact.get("paragraph_title") or "").strip(),
+        "published_at": str(fact.get("published_at") or "").strip(),
+    }
+
+
+def _build_digest_source_facts(news_digest: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [
+        _normalize_source_fact(
+            {
+                "title": item.get("title", ""),
+                "source": item.get("source", "OrcaFish Monitor"),
+                "summary": item.get("summary", ""),
+                "paragraph_title": item.get("country", "监控摘要"),
+                "published_at": item.get("published_at", ""),
+            }
+        )
+        for item in news_digest
+        if item.get("title")
+    ]
+
+
+def _merge_source_facts(
+    agent_facts: dict[str, list[dict[str, str]]],
+    news_digest: list[dict[str, str]],
+    limit: int = 12,
+) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for fact in [*sum(agent_facts.values(), []), *_build_digest_source_facts(news_digest)]:
+        normalized = _normalize_source_fact(fact)
+        identity = normalized["url"] or f"{normalized['source']}::{normalized['title']}"
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(normalized)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def _format_source_fact_lines(source_facts: list[dict[str, str]], limit: int = 6) -> list[str]:
+    lines: list[str] = []
+    for fact in source_facts[:limit]:
+        meta_parts = [
+            part for part in [
+                fact.get("source", ""),
+                fact.get("published_at", ""),
+                fact.get("paragraph_title", ""),
+            ] if part
+        ]
+        line = f"- {fact.get('title', '未命名来源')}（{' · '.join(meta_parts) or '外部来源'}）"
+        summary = (fact.get("summary") or "").strip()
+        if summary:
+            line += f"\n  {summary[:180]}"
+        url = (fact.get("url") or "").strip()
+        if url:
+            line += f"\n  链接：{url}"
+        lines.append(line)
+    return lines
 
 def _build_initial_sections(query: str, matched_terms: list[str]) -> list[AnalysisSectionState]:
     term_hint = "、".join(matched_terms[:4]) or query
@@ -161,7 +245,7 @@ def _build_sections(
     results: dict[str, str],
     final_report: str,
     fallback_map: dict[str, bool],
-    source_count: int,
+    source_counts: dict[str, int],
     current_status: str,
 ) -> list[AnalysisSectionState]:
     sections: list[AnalysisSectionState] = []
@@ -176,7 +260,7 @@ def _build_sections(
                 status=section_status,
                 summary=_strip_md(content)[:160] if content else f"{_AGENT_LABELS[key]}正在补齐“{query}”相关素材。",
                 content=content,
-                source_count=source_count if content else 0,
+                source_count=source_counts.get(key, 0) if content else 0,
                 fallback_used=bool(fallback_map.get(key)),
                 updated_at=datetime.now(UTC),
             )
@@ -189,9 +273,9 @@ def _build_sections(
             title=_AGENT_TITLES["final"],
             order=4,
             status=final_status,
-            summary=_strip_md(final_report)[:180] if final_report else "综合结论仍在整理三路结果与监控底稿。",
+            summary=_strip_md(final_report)[:180] if final_report else "综合结论仍在整理三路结果与监控摘要。",
             content=final_report or "",
-            source_count=source_count if final_report else 0,
+            source_count=source_counts.get("final", 0) if final_report else 0,
             fallback_used=current_status == "degraded",
             updated_at=datetime.now(UTC),
         )
@@ -240,15 +324,25 @@ def _export_model(model: object) -> dict:
     return dict(model) if isinstance(model, dict) else {}
 
 
-def _update_task_snapshot(task: AnalysisTask, results: dict[str, str], news_digest: list[dict[str, str]], fallback_map: dict[str, bool], status: str, progress: int, final_report: str = "") -> None:
+def _update_task_snapshot(
+    task: AnalysisTask,
+    results: dict[str, str],
+    news_digest: list[dict[str, str]],
+    fallback_map: dict[str, bool],
+    status: str,
+    progress: int,
+    final_report: str = "",
+    source_counts: dict[str, int] | None = None,
+) -> None:
+    source_counts = source_counts or {}
     task.status = status
     task.progress = progress
     task.news_digest = news_digest
-    task.source_count = len(news_digest)
+    task.source_count = source_counts.get("final", len(news_digest))
     task.fallback_used = any(fallback_map.values())
     task.matched_terms = _extract_query_terms(task.query)
     task.sentiment_hint = _build_sentiment_hint(" ".join([task.query, *results.values(), final_report]))
-    task.sections = _build_sections(task.query, results, final_report, fallback_map, len(news_digest), status)
+    task.sections = _build_sections(task.query, results, final_report, fallback_map, source_counts, status)
     task.agent_status = {
         "query": "fallback" if fallback_map.get("query") else ("done" if results.get("query") else "waiting"),
         "media": "fallback" if fallback_map.get("media") else ("done" if results.get("media") else "waiting"),
@@ -263,7 +357,7 @@ def _update_task_snapshot(task: AnalysisTask, results: dict[str, str], news_dige
             label=_AGENT_LABELS[key],
             status="fallback" if fallback_map.get(key) else "done" if has_content else "running" if status in {"running", "assembling"} else "queued",
             progress=100 if has_content else min(progress, 80) if status in {"running", "assembling"} else 0,
-            source_count=len(news_digest) if has_content else 0,
+            source_count=source_counts.get(key, 0) if has_content else 0,
             summary=_strip_md(results.get(key, ""))[:120] if has_content else f"{_AGENT_LABELS[key]}正在处理“{task.query}”。",
             fallback_used=bool(fallback_map.get(key)),
             updated_at=datetime.now(UTC),
@@ -273,15 +367,15 @@ def _update_task_snapshot(task: AnalysisTask, results: dict[str, str], news_dige
         label=_AGENT_LABELS["report"],
         status="done" if final_report and status in {"completed", "degraded"} else "running" if final_report or status == "assembling" else "queued",
         progress=100 if final_report and status in {"completed", "degraded"} else 68 if status == "assembling" else min(progress, 40),
-        source_count=len(news_digest) if final_report else 0,
+        source_count=source_counts.get("final", 0) if final_report else 0,
         summary=_strip_md(final_report)[:120] if final_report else "等待三路结果收口后输出综合报告。",
         fallback_used=status == "degraded",
         updated_at=datetime.now(UTC),
     )
     task.agent_metrics = agent_metrics
     if status == "degraded":
-        task.degraded_reason = "当前拿到的是监控新闻与结构化底稿，真实素材不足，不能视为完整研判。"
-        task.ui_message = "当前为降级底稿，可继续观察、补数或进入预测预演。"
+        task.degraded_reason = "当前报告已先基于真实来源摘录、监控摘要与结构化线索完成收口，可继续用于观察与推演。"
+        task.ui_message = "当前报告已生成降级版，但仍保留真实来源摘录，可继续查看重点结论或进入未来推演。"
     elif status == "completed":
         task.degraded_reason = None
         task.ui_message = "三路结果已汇总完成，可以继续进入未来推演。"
@@ -292,11 +386,16 @@ def _update_task_snapshot(task: AnalysisTask, results: dict[str, str], news_dige
     task.last_update_at = datetime.now(UTC)
 
 
-def _build_agent_fallback_report(query: str, agent_key: str, news_digest: list[dict[str, str]]) -> str:
+def _build_agent_fallback_report(
+    query: str,
+    agent_key: str,
+    news_digest: list[dict[str, str]],
+    source_facts: list[dict[str, str]] | None = None,
+) -> str:
     lead = {
-        "query": "搜索代理体已经切换到监控新闻与公开信号摘要，以下是当前可用的事实线索。",
-        "media": "媒体代理体未拿到完整正文时，会先基于新闻标题与摘要重建叙事脉络。",
-        "insight": "洞察代理体未拿到完整社媒数据时，会先根据热点标题、地区和信号类型给出观察框架。",
+        "query": "搜索代理体已经切换到公开来源摘录与监控新闻摘要，以下是当前可用的事实线索。",
+        "media": "媒体代理体未拿到完整正文时，会先基于真实标题、来源摘录与监控摘要重建叙事脉络。",
+        "insight": "洞察代理体未拿到完整社媒数据时，会先根据真实标题、来源线索、地区与信号类型给出观察框架。",
     }[agent_key]
     section_title = {
         "query": "搜索流摘要",
@@ -304,34 +403,42 @@ def _build_agent_fallback_report(query: str, agent_key: str, news_digest: list[d
         "insight": "洞察结构摘要",
     }[agent_key]
 
-    if not news_digest:
+    source_facts = source_facts or []
+    fact_lines = _format_source_fact_lines(source_facts, limit=4)
+    if not fact_lines and not news_digest:
         return f"## {section_title}\n\n围绕“{query}”尚未收集到足够公开素材，系统已切换到结构化框架模式，建议继续观察后续新闻和信号变化。"
 
-    bullets = []
-    for item in news_digest[:4]:
-        bullets.append(
-            f"- [{item['country']}] {item['title']}（{item['source']}，{item['published_at']}）\n"
-            f"  {item['summary'][:140]}"
-        )
+    bullets = fact_lines[:]
+    if len(bullets) < 4:
+        for item in news_digest[: 4 - len(bullets)]:
+            bullets.append(
+                f"- [{item['country']}] {item['title']}（{item['source']}，{item['published_at']}）\n"
+                f"  {item['summary'][:140]}"
+            )
 
     if agent_key == "query":
-        closing = "可先据此确认主要地区、事件触发点与外部政策动作。"
+        closing = "可先据此确认主要地区、事件触发点、来源分布与外部政策动作。"
     elif agent_key == "media":
-        closing = "从这些标题与摘要看，报道已形成“事件触发—升级信号—外部回应”的叙事链。"
+        closing = "从这些真实标题与摘要看，报道已形成“事件触发—升级信号—外部回应”的叙事链。"
     else:
-        closing = "当前最值得继续追踪的是情绪是否继续升温、讨论是否从新闻转向行动预期。"
+        closing = "当前最值得继续追踪的是情绪是否继续升温、讨论是否从新闻转向行动预期，以及哪些公开来源正在重复同一信号。"
 
     return f"## {section_title}\n\n{lead}\n\n" + "\n".join(bullets) + f"\n\n{closing}"
 
 
-def _build_fallback_final_report(query: str, results: dict[str, str], news_digest: list[dict[str, str]]) -> str:
+def _build_fallback_final_report(
+    query: str,
+    results: dict[str, str],
+    news_digest: list[dict[str, str]],
+    source_facts: list[dict[str, str]],
+) -> str:
     lines = [
         f"# {query} — 议题综合研判",
         "",
         f"> 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "",
         "## 当前判断",
-        f"围绕“{query}”的公开线索仍在持续变化。当前报告优先整合监控新闻、热点地区与信号类型，给出一个可以直接进入未来预测的工作底稿，而不是输出空白或失败说明。",
+        f"围绕“{query}”的公开线索仍在持续变化。当前报告优先整合真实来源摘录、监控新闻、热点地区与信号类型，先给出一个可以继续观察和推演的综合版，而不是输出空白或失败说明。",
         "",
     ]
 
@@ -342,24 +449,39 @@ def _build_fallback_final_report(query: str, results: dict[str, str], news_diges
             lines.append(content)
             lines.append("")
 
+    if source_facts:
+        lines.append("## 公开来源摘录")
+        lines.extend(_format_source_fact_lines(source_facts, limit=6))
+        lines.append("")
+
     if news_digest:
         lines.append("## 监控新闻摘录")
         for item in news_digest[:5]:
-            lines.append(f"- {item['title']}（{item['country']} · {item['source']}）")
+            lines.append(f"- {item['title']}（{item['country']} · {item['source']} · {item['published_at']}）")
+            if item.get("summary"):
+                lines.append(f"  {item['summary'][:160]}")
         lines.append("")
 
     lines.extend([
         "## 下一步建议",
-        "1. 继续观察监控新闻是否集中指向同一地区与同一触发事件。",
-        "2. 将当前综合底稿送入未来预测，观察参与方、平台与行动链路如何展开。",
-        "3. 如果后续正文抓取恢复，再用新增素材回填搜索流与媒体流。",
+        "1. 优先核查公开来源摘录里反复出现的标题、地区与关键信号，确认它们是否指向同一事件链。",
+        "2. 将当前综合观察版送入未来预测，观察参与方、平台与行动链路如何展开。",
+        "3. 如果后续正文抓取恢复，再用新增真实素材回填搜索流与媒体流。",
     ])
     return "\n".join(lines)
 
 
-def _derive_highlights(query: str, news_digest: list[dict[str, str]], results: dict[str, str]) -> list[str]:
+def _derive_highlights(query: str, news_digest: list[dict[str, str]], results: dict[str, str], source_facts: list[dict[str, str]]) -> list[str]:
     highlights: list[str] = []
     seen: set[str] = set()
+    for fact in source_facts[:4]:
+        headline = fact.get("title", "").strip()
+        source = fact.get("source", "").strip()
+        summary = fact.get("summary", "").strip()
+        highlight = f"{headline}（{source}）" if headline and source else headline or summary[:100]
+        if highlight and highlight not in seen:
+            highlights.append(highlight)
+            seen.add(highlight)
     for item in news_digest[:4]:
         headline = item.get("title", "").strip()
         if headline and headline not in seen:
@@ -375,10 +497,16 @@ def _derive_highlights(query: str, news_digest: list[dict[str, str]], results: d
     return highlights[:5]
 
 
-def _build_structured_final_report(query: str, results: dict[str, str], news_digest: list[dict[str, str]], fallback_map: dict[str, bool]) -> str:
-    highlights = _derive_highlights(query, news_digest, results)
+def _build_structured_final_report(
+    query: str,
+    results: dict[str, str],
+    news_digest: list[dict[str, str]],
+    fallback_map: dict[str, bool],
+    source_facts: list[dict[str, str]],
+) -> str:
+    highlights = _derive_highlights(query, news_digest, results, source_facts)
     fallback_total = sum(1 for used in fallback_map.values() if used)
-    status_note = "当前报告包含监控底稿与结构化补全内容。" if fallback_total else "当前报告基于三路真实素材汇总。"
+    status_note = "当前报告包含真实来源摘录、监控摘要与结构化补全内容。" if fallback_total else "当前报告基于三路真实素材汇总。"
     lines = [
         f"# {query} — 议题综合研判",
         "",
@@ -395,23 +523,48 @@ def _build_structured_final_report(query: str, results: dict[str, str], news_dig
         lines.append(f"### {title}")
         lines.append(content or "该板块仍在等待更多素材。")
         lines.append("")
+    if source_facts:
+        lines.append("## 公开来源摘录")
+        lines.extend(_format_source_fact_lines(source_facts, limit=8))
+        lines.append("")
     if news_digest:
-        lines.append("## 监控底稿")
+        lines.append("## 监控摘要")
         for item in news_digest[:5]:
             lines.append(f"- {item['title']}（{item['country']} · {item['source']} · {item['published_at']}）")
+            if item.get("summary"):
+                lines.append(f"  {item['summary'][:160]}")
         lines.append("")
     lines.extend([
         "## 下一步行动",
-        "1. 检查当前板块中哪些仍是监控底稿，优先补齐那些影响判断的关键素材。",
+        "1. 检查当前板块中哪些仍主要依赖监控摘要，优先补齐那些影响判断的关键素材。",
         "2. 如需预演趋势，可将当前综合结论送入未来推演，观察参与方与行动链路。",
-        "3. 持续追踪新闻与地区信号变化，确认风险是否继续升温或转入缓和。",
+        "3. 持续追踪公开来源与地区信号变化，确认风险是否继续升温或转入缓和。",
     ])
     return "\n".join(lines)
 
 
-def _render_fallback_html(query: str, merged_markdown: str, news_digest: list[dict[str, str]]) -> str:
+def _render_fallback_html(
+    query: str,
+    merged_markdown: str,
+    news_digest: list[dict[str, str]],
+    source_facts: list[dict[str, str]],
+) -> str:
     content_html = merged_markdown.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     content_html = content_html.replace("\n", "<br/>")
+    source_html = "".join(
+        (
+            "<div class='news-item'>"
+            f"<div class='news-title'>{escape(fact.get('title', '未命名来源'))}</div>"
+            f"<div class='news-meta'>{escape(' · '.join(part for part in [fact.get('source', ''), fact.get('published_at', ''), fact.get('paragraph_title', '')] if part) or '外部来源')}</div>"
+            f"<div class='news-summary'>{escape((fact.get('summary') or '检索已命中该来源，但正文摘要仍在补全。')[:220])}</div>"
+            + (
+                f"<div class='news-summary'><a href='{escape(fact.get('url', ''))}' target='_blank' rel='noopener'>查看原始链接</a></div>"
+                if fact.get('url') else ""
+            )
+            + "</div>"
+        )
+        for fact in source_facts[:6]
+    )
     news_html = "".join(
         (
             "<div class='news-item'>"
@@ -441,6 +594,8 @@ body {{ font-family: 'IBM Plex Sans', -apple-system, sans-serif; margin: 0; back
 .news-title {{ font-weight: 700; color: #102a56; margin-bottom: 4px; }}
 .news-meta {{ font-size: 0.72rem; color: #6b7f93; margin-bottom: 6px; }}
 .news-summary {{ font-size: 0.84rem; color: #40586f; line-height: 1.7; }}
+.news-summary a {{ color: #1d4ed8; text-decoration: none; }}
+.news-summary a:hover {{ text-decoration: underline; }}
 </style>
 </head>
 <body>
@@ -455,7 +610,11 @@ body {{ font-family: 'IBM Plex Sans', -apple-system, sans-serif; margin: 0; back
       <div class="report">{content_html}</div>
     </div>
     <div class="card">
-      <h2>监控新闻底稿</h2>
+      <h2>公开来源摘录</h2>
+      {source_html or "<div class='news-summary'>当前暂无可展示的公开来源摘录。</div>"}
+    </div>
+    <div class="card">
+      <h2>监控新闻摘要</h2>
       {news_html or "<div class='news-summary'>当前暂无可展示的监控新闻。</div>"}
     </div>
   </div>
@@ -542,73 +701,170 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
 
     # Run all three agents concurrently
     # Each has its own LLM and search tool — no shared state
-    async def run_query() -> tuple[str, str]:
+    async def run_query() -> tuple[str, dict[str, object]]:
         try:
             state = await asyncio.wait_for(
                 agents["query"].research(query),
                 timeout=240.0,
             )
-            return ("query", state.final_report or f"{query} 深度研究报告（网络搜索）")
+            source_metrics = getattr(state, "source_metrics", None)
+            source_count = max(
+                _coerce_int(getattr(source_metrics, "unique_source_count", 0) if source_metrics else 0),
+                _coerce_int(getattr(source_metrics, "result_count", 0) if source_metrics else 0),
+            )
+            return (
+                "query",
+                {
+                    "report": state.final_report or f"{query} 深度研究报告（网络搜索）",
+                    "source_count": source_count,
+                    "source_facts": _safe_extract_source_facts(state, limit=4),
+                },
+            )
         except asyncio.TimeoutError:
-            return ("query", f"关于 {query} 的网络舆情搜索（超时）")
+            return ("query", {"report": f"关于 {query} 的网络舆情搜索（超时）", "source_count": 0, "source_facts": []})
         except Exception:
-            return ("query", f"{query} 网络搜索遇到问题。")
+            return ("query", {"report": f"{query} 网络搜索遇到问题。", "source_count": 0, "source_facts": []})
 
-    async def run_media() -> tuple[str, str]:
+    async def run_media() -> tuple[str, dict[str, object]]:
         try:
             state = await asyncio.wait_for(
                 agents["media"].research(query),
                 timeout=240.0,
             )
-            return ("media", state.final_report or f"{query} 多媒体舆情分析（媒体报道）")
+            source_metrics = getattr(state, "source_metrics", None)
+            source_count = max(
+                _coerce_int(getattr(source_metrics, "unique_source_count", 0) if source_metrics else 0),
+                _coerce_int(getattr(source_metrics, "result_count", 0) if source_metrics else 0),
+            )
+            return (
+                "media",
+                {
+                    "report": state.final_report or f"{query} 多媒体舆情分析（媒体报道）",
+                    "source_count": source_count,
+                    "source_facts": _safe_extract_source_facts(state, limit=4),
+                },
+            )
         except asyncio.TimeoutError:
-            return ("media", f"关于 {query} 的媒体报道分析（超时）")
+            return ("media", {"report": f"关于 {query} 的媒体报道分析（超时）", "source_count": 0, "source_facts": []})
         except Exception:
-            return ("media", f"{query} 媒体报道分析遇到问题。")
+            return ("media", {"report": f"{query} 媒体报道分析遇到问题。", "source_count": 0, "source_facts": []})
 
-    async def run_insight() -> tuple[str, str]:
+    async def run_insight() -> tuple[str, dict[str, object]]:
         try:
             state = await asyncio.wait_for(
                 agents["insight"].research(query),
                 timeout=240.0,
             )
-            return ("insight", state.final_report or f"{query} 社交媒体舆情分析（社媒数据）")
+            source_metrics = getattr(state, "source_metrics", None)
+            source_count = max(
+                _coerce_int(getattr(source_metrics, "unique_source_count", 0) if source_metrics else 0),
+                _coerce_int(getattr(source_metrics, "result_count", 0) if source_metrics else 0),
+            )
+            return (
+                "insight",
+                {
+                    "report": state.final_report or f"{query} 社交媒体舆情分析（社媒数据）",
+                    "source_count": source_count,
+                    "source_facts": _safe_extract_source_facts(state, limit=4),
+                },
+            )
         except asyncio.TimeoutError:
-            return ("insight", f"关于 {query} 的社交媒体分析（超时）")
+            return ("insight", {"report": f"关于 {query} 的社交媒体分析（超时）", "source_count": 0, "source_facts": []})
         except Exception:
-            return ("insight", f"{query} 社交媒体分析遇到问题。")
+            return ("insight", {"report": f"{query} 社交媒体分析遇到问题。", "source_count": 0, "source_facts": []})
 
-    news_digest = _build_fallback_news_digest(query)
-    if task:
-        first_headline = news_digest[0]["title"] if news_digest else "正在等待外部信息。"
-        _append_timeline(
-            task,
-            _make_timeline_event(
-                "digest",
-                "监控底稿已接入",
-                f"当前已接入 {len(news_digest)} 条监控新闻摘要，最新线索：{first_headline}",
-                "done" if news_digest else "running",
-            ),
-        )
-        task.ui_message = f"已接入 {len(news_digest)} 条监控摘要，多代理正在并行研判。"
+    async def load_digest() -> tuple[str, list[dict[str, str]]]:
+        try:
+            return ("__digest__", await asyncio.to_thread(_build_fallback_news_digest, query))
+        except Exception:
+            return ("__digest__", [])
+
     results: dict[str, str] = {}
     fallback_map: dict[str, bool] = {"query": False, "media": False, "insight": False}
-    agent_jobs = [
+    source_counts: dict[str, int] = {"query": 0, "media": 0, "insight": 0, "final": 0}
+    agent_facts: dict[str, list[dict[str, str]]] = {"query": [], "media": [], "insight": []}
+    core_jobs = [
         asyncio.create_task(run_query()),
         asyncio.create_task(run_media()),
         asyncio.create_task(run_insight()),
     ]
+    digest_task = asyncio.create_task(load_digest())
+    news_digest: list[dict[str, str]] = []
     completed = 0
 
-    for future in asyncio.as_completed(agent_jobs):
+    def consume_digest_result(payload: object) -> None:
+        nonlocal news_digest
+        latest_digest = payload if isinstance(payload, list) else []
+        if latest_digest == news_digest:
+            return
+        news_digest = latest_digest
+        if task:
+            first_headline = news_digest[0]["title"] if news_digest else "正在等待外部信息。"
+            _append_timeline(
+                task,
+                _make_timeline_event(
+                    "digest",
+                    "监控摘要已接入",
+                    f"当前已接入 {len(news_digest)} 条监控新闻摘要，最新线索：{first_headline}",
+                    "done" if news_digest else "running",
+                ),
+            )
+            if task.status in {"running", "assembling"}:
+                task.ui_message = f"已接入 {len(news_digest)} 条监控摘要，多代理正在并行研判。"
+
+    def handle_digest_done(fut: asyncio.Task) -> None:
         try:
-            key, report = await future
-            if _looks_like_failure_text(report):
-                fallback_map[key] = True
-                report = _build_agent_fallback_report(query, key, news_digest)
-            results[key] = report
+            _, payload = fut.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
+        consume_digest_result(payload)
+
+    async def maybe_collect_digest(timeout: float) -> None:
+        if digest_task.done():
+            try:
+                _, payload = await digest_task
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                return
+            consume_digest_result(payload)
+            return
+        if timeout <= 0:
+            return
+        try:
+            _, payload = await asyncio.wait_for(asyncio.shield(digest_task), timeout=timeout)
+        except asyncio.TimeoutError:
+            return
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
+        consume_digest_result(payload)
+
+    digest_task.add_done_callback(handle_digest_done)
+
+    for future in asyncio.as_completed(core_jobs):
+        try:
+            key, payload = await future
         except Exception:
             continue
+
+        report = payload.get("report", "") if isinstance(payload, dict) else ""
+        source_counts[key] = _coerce_int(payload.get("source_count", 0) if isinstance(payload, dict) else 0)
+        agent_facts[key] = [
+            _normalize_source_fact(fact)
+            for fact in (payload.get("source_facts", []) if isinstance(payload, dict) else [])
+            if isinstance(fact, dict)
+        ]
+        if _looks_like_failure_text(report):
+            fallback_map[key] = True
+            report = _build_agent_fallback_report(query, key, news_digest, agent_facts.get(key, []))
+        elif not report.strip() and agent_facts.get(key):
+            fallback_map[key] = True
+            report = _build_agent_fallback_report(query, key, news_digest, agent_facts.get(key, []))
+        results[key] = report
 
         completed += 1
         if task:
@@ -624,7 +880,7 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
                     key,
                     f"{_AGENT_LABELS[key]}已返回",
                     (
-                        f"当前板块使用监控底稿作为临时输出，已复用 {len(news_digest)} 条摘要补齐。"
+                        f"当前板块先使用真实来源摘录与监控摘要作为临时输出，已复用 {max(len(agent_facts.get(key, [])), len(news_digest))} 条线索补齐。"
                         if fallback_map.get(key)
                         else _strip_md(results[key])[:150] or f"{_AGENT_LABELS[key]}已完成输出。"
                     ),
@@ -638,9 +894,26 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
                 fallback_map=fallback_map,
                 status="running",
                 progress=min(20 + completed * 18, 78),
+                source_counts={
+                    **source_counts,
+                    "final": max(sum(source_counts.values()), len(news_digest)),
+                },
             )
 
-    # ── Stage 2: Merge agent outputs ───────────────────────────────────
+    await maybe_collect_digest(timeout=1.2)
+    merged_source_facts = _merge_source_facts(agent_facts, news_digest)
+    source_counts["final"] = max(len(merged_source_facts), sum(source_counts[key] for key in ("query", "media", "insight")), len(news_digest))
+    for key, used in fallback_map.items():
+        if not used:
+            continue
+        results[key] = _build_agent_fallback_report(query, key, news_digest, agent_facts.get(key, []))
+        if task:
+            if key == "query":
+                task.query_report = results[key]
+            elif key == "media":
+                task.media_report = results[key]
+            elif key == "insight":
+                task.insight_report = results[key]
     merged = _merge_agent_reports(
         query=query,
         query_report=results.get("query", ""),
@@ -648,9 +921,9 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
         insight_report=results.get("insight", ""),
     )
     if _looks_like_failure_text(merged):
-        merged = _build_fallback_final_report(query, results, news_digest)
+        merged = _build_fallback_final_report(query, results, news_digest, merged_source_facts)
     else:
-        merged = _build_structured_final_report(query, results, news_digest, fallback_map)
+        merged = _build_structured_final_report(query, results, news_digest, fallback_map, merged_source_facts)
     if task:
         _append_timeline(task, _make_timeline_event("report", "正在编排综合结论", "三路结果已经汇总，正在去重并生成结构化综合报告。", "running"))
         _update_task_snapshot(
@@ -661,48 +934,64 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
             status="assembling",
             progress=86,
             final_report=merged,
+            source_counts=source_counts,
         )
 
     # ── Stage 3: Generate final HTML report ───────────────────────────
-    report_agent = ReportAgent(report_llm)
-    if task:
-        _append_timeline(
-            task,
-            _make_timeline_event(
-                "render",
-                "正在整理报告版式",
-                "结构化结论已完成，正在渲染最终报告版面与可视化摘要。",
-                "running",
-            ),
-        )
-    try:
-        html = await asyncio.wait_for(
-            report_agent.generate(
-                task_id=task_id,
-                query=query,
-                query_report=results.get("query", ""),
-                media_report=results.get("media", ""),
-                insight_report=results.get("insight", ""),
-            ),
-            timeout=300.0,
-        )
-        if _looks_like_failure_text(html):
-            html = _render_fallback_html(query, merged, news_digest)
+    fallback_total = sum(1 for used in fallback_map.values() if used)
+    should_skip_report_llm = fallback_total >= 2
+    if should_skip_report_llm:
         if task:
-            task.html_report = html
-    except asyncio.TimeoutError:
+            _append_timeline(
+                task,
+                _make_timeline_event(
+                    "render",
+                    "已切换快速排版",
+                    "检测到多路代理体回退到观察摘要，直接使用结构化结论生成可读 HTML，避免长时间停留在 assembling。",
+                    "warning",
+                ),
+            )
+            task.html_report = _render_fallback_html(query, merged, news_digest, merged_source_facts)
+    else:
+        report_agent = ReportAgent(report_llm)
         if task:
-            task.html_report = _render_fallback_html(query, merged, news_digest)
-    except Exception as e:
-        if task:
-            task.html_report = _render_fallback_html(query, f"{merged}\n\n[报告生成器异常：{str(e)}]", news_digest)
+            _append_timeline(
+                task,
+                _make_timeline_event(
+                    "render",
+                    "正在整理报告版式",
+                    "结构化结论已完成，正在渲染最终报告版面与可视化摘要。",
+                    "running",
+                ),
+            )
+        try:
+            html = await asyncio.wait_for(
+                report_agent.generate(
+                    task_id=task_id,
+                    query=query,
+                    query_report=results.get("query", ""),
+                    media_report=results.get("media", ""),
+                    insight_report=results.get("insight", ""),
+                    source_facts="\n".join(_format_source_fact_lines(merged_source_facts, limit=8)),
+                ),
+                timeout=90.0,
+            )
+            if _looks_like_failure_text(html):
+                html = _render_fallback_html(query, merged, news_digest)
+            if task:
+                task.html_report = html
+        except asyncio.TimeoutError:
+            if task:
+                task.html_report = _render_fallback_html(query, merged, news_digest, merged_source_facts)
+        except Exception as e:
+            if task:
+                task.html_report = _render_fallback_html(query, f"{merged}\n\n[报告生成器异常：{str(e)}]", news_digest)
 
     if task:
-        fallback_total = sum(1 for used in fallback_map.values() if used)
         task.data_quality = "degraded" if fallback_total >= 3 else "mixed" if fallback_total > 0 else "live"
         task.progress = 100 if fallback_total == 0 else 96 if fallback_total < 3 else 88
         task.status = "degraded" if fallback_total >= 2 else "completed"
-        task.sections = _build_sections(query, results, merged, fallback_map, len(news_digest), task.status)
+        task.sections = _build_sections(query, results, merged, fallback_map, source_counts, task.status)
         task.agent_status = {
             "query": "fallback" if fallback_map.get("query") else "done",
             "media": "fallback" if fallback_map.get("media") else "done",
@@ -710,17 +999,17 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
             "report": "done",
         }
         task.fallback_used = any(fallback_map.values())
-        task.source_count = len(news_digest)
+        task.source_count = source_counts.get("final", len(news_digest))
         task.news_digest = news_digest
         task.matched_terms = _extract_query_terms(query)
         task.sentiment_hint = _build_sentiment_hint(" ".join([query, *results.values(), merged]))
-        task.degraded_reason = "至少两路代理体未拿到足够真实素材，当前输出主要依赖监控底稿。" if task.status == "degraded" else None
-        task.ui_message = "当前为降级底稿，建议继续补齐素材后再作为正式研判使用。" if task.status == "degraded" else "综合研判已完成，可继续进入未来推演。"
+        task.degraded_reason = "当前报告已先基于真实来源摘录、监控摘要与结构化线索完成收口，可继续用于观察与推演，后续补齐真实素材后会更完整。" if task.status == "degraded" else None
+        task.ui_message = "当前报告已生成降级版，但仍保留真实来源摘录，可继续查看重点结论或进入未来推演。" if task.status == "degraded" else "综合研判已完成，可继续进入未来推演。"
         task.agent_metrics = {
-            "query": AnalysisAgentState(key="query", label=_AGENT_LABELS["query"], status="fallback" if fallback_map.get("query") else "done", progress=100, source_count=len(news_digest), summary=_strip_md(results.get("query", ""))[:120], fallback_used=bool(fallback_map.get("query")), updated_at=datetime.now(UTC)),
-            "media": AnalysisAgentState(key="media", label=_AGENT_LABELS["media"], status="fallback" if fallback_map.get("media") else "done", progress=100, source_count=len(news_digest), summary=_strip_md(results.get("media", ""))[:120], fallback_used=bool(fallback_map.get("media")), updated_at=datetime.now(UTC)),
-            "insight": AnalysisAgentState(key="insight", label=_AGENT_LABELS["insight"], status="fallback" if fallback_map.get("insight") else "done", progress=100, source_count=len(news_digest), summary=_strip_md(results.get("insight", ""))[:120], fallback_used=bool(fallback_map.get("insight")), updated_at=datetime.now(UTC)),
-            "report": AnalysisAgentState(key="report", label=_AGENT_LABELS["report"], status="done", progress=100, source_count=len(news_digest), summary=_strip_md(merged)[:120], fallback_used=task.status == "degraded", updated_at=datetime.now(UTC)),
+            "query": AnalysisAgentState(key="query", label=_AGENT_LABELS["query"], status="fallback" if fallback_map.get("query") else "done", progress=100, source_count=source_counts.get("query", 0), summary=_strip_md(results.get("query", ""))[:120], fallback_used=bool(fallback_map.get("query")), updated_at=datetime.now(UTC)),
+            "media": AnalysisAgentState(key="media", label=_AGENT_LABELS["media"], status="fallback" if fallback_map.get("media") else "done", progress=100, source_count=source_counts.get("media", 0), summary=_strip_md(results.get("media", ""))[:120], fallback_used=bool(fallback_map.get("media")), updated_at=datetime.now(UTC)),
+            "insight": AnalysisAgentState(key="insight", label=_AGENT_LABELS["insight"], status="fallback" if fallback_map.get("insight") else "done", progress=100, source_count=source_counts.get("insight", 0), summary=_strip_md(results.get("insight", ""))[:120], fallback_used=bool(fallback_map.get("insight")), updated_at=datetime.now(UTC)),
+            "report": AnalysisAgentState(key="report", label=_AGENT_LABELS["report"], status="done", progress=100, source_count=source_counts.get("final", 0), summary=_strip_md(merged)[:120], fallback_used=task.status == "degraded", updated_at=datetime.now(UTC)),
         }
         _append_timeline(
             task,

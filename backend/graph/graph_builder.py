@@ -57,7 +57,7 @@ class GraphBuilder:
                 }
             )
             for label in labels:
-                if label not in {"Entity", "Node"}:
+                if label not in {"Entity", "Node", "Episode"}:
                     entity_types.add(label)
 
         def add_edge(source: str, target: str, edge_type: str, fact: str, weight: float = 0.84) -> None:

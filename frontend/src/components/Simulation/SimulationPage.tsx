@@ -22,6 +22,22 @@ interface SimRunStatus {
   twitter_actions_count: number; reddit_actions_count: number
 }
 
+interface GraphPayload {
+  nodes: KGNode[]
+  edges: KGLink[]
+}
+
+function normalizeGraphPayload(data?: { nodes?: KGNode[]; edges?: KGLink[] } | null): GraphPayload {
+  return {
+    nodes: Array.isArray(data?.nodes) ? data.nodes : [],
+    edges: Array.isArray(data?.edges) ? data.edges : [],
+  }
+}
+
+function getGraphPayloadSignature(data: GraphPayload): string {
+  return JSON.stringify(data)
+}
+
 
 // ── SimulationStreamPanel ──────────────────────────────────────────────────────
 interface SimAction {
@@ -628,19 +644,6 @@ interface CountryContextDraftSummary {
   top_headlines?: string[]
 }
 
-function buildGraphSnapshotSignature(graph: { nodes: KGNode[]; edges: KGLink[] } | null | undefined) {
-  if (!graph) return ''
-  const nodeSignature = [...(graph.nodes ?? [])]
-    .map((node) => `${node.id}|${node.type}|${node.name}|${(node.labels ?? []).join(',')}`)
-    .sort()
-    .join('||')
-  const edgeSignature = [...(graph.edges ?? [])]
-    .map((edge) => `${String(edge.source)}>${String(edge.target)}|${edge.type}|${edge.name}|${edge.weight ?? ''}`)
-    .sort()
-    .join('||')
-  return `${graph.nodes.length}::${graph.edges.length}::${nodeSignature}##${edgeSignature}`
-}
-
 type SimulationDraftWithCountryContext = SimulationDraft & {
   country_context?: CountryContextDraftSummary
   countryContext?: CountryContextDraftSummary
@@ -649,6 +652,8 @@ type SimulationDraftWithCountryContext = SimulationDraft & {
   country?: CountryContextDraftSummary
   source_country?: CountryContextDraftSummary
 }
+
+const RUNS_COLLAPSED_LIMIT = 6
 
 export default function SimulationPage() {
   const draft = useSimulationDraftStore((s) => s.draft)
@@ -663,12 +668,13 @@ export default function SimulationPage() {
     name: '未来预测',
   })
   const [selectedRun, setSelectedRun] = useState<SimulationRun | null>(null)
+  const [runsExpanded, setRunsExpanded] = useState(false)
   const [showReport, setShowReport] = useState(false)
   const [viewMode, setViewMode] = useState<'graph' | 'split' | 'workbench'>('split')
   const [startingRun, setStartingRun] = useState(false)
   const [stoppingRun, setStoppingRun] = useState(false)
   const [runStatus, setRunStatus] = useState<SimRunStatus | null>(null)
-  const [graphData, setGraphData] = useState<{ nodes: KGNode[]; edges: KGLink[] } | null>(null)
+  const [graphData, setGraphData] = useState<GraphPayload | null>(null)
   const [graphLoading, setGraphLoading] = useState(false)
   const [graphRefreshKey, setGraphRefreshKey] = useState(0)
   const graphSignatureRef = useRef('')
@@ -702,7 +708,7 @@ export default function SimulationPage() {
     }))
   }, [draft])
 
-  // Fetch graph data when selected run changes or while prediction keeps evolving
+  // Fetch graph data when selected run changes or prediction meaningfully advances
   useEffect(() => {
     if (!selectedRun?.run_id) {
       graphSignatureRef.current = ''
@@ -710,36 +716,42 @@ export default function SimulationPage() {
       lastGraphRefreshKeyRef.current = graphRefreshKey
       setGraphData(null)
       setGraphLoading(false)
+      graphSignatureRef.current = ''
+      lastGraphRefreshKeyRef.current = graphRefreshKey
+      lastGraphRunIdRef.current = ''
       return
     }
 
     const runChanged = lastGraphRunIdRef.current !== selectedRun.run_id
-    const refreshRequested = lastGraphRefreshKeyRef.current !== graphRefreshKey
     lastGraphRunIdRef.current = selectedRun.run_id
     lastGraphRefreshKeyRef.current = graphRefreshKey
 
     let active = true
+    const currentRunId = selectedRun.run_id
+    const forceRefresh = graphRefreshKey !== lastGraphRefreshKeyRef.current
+    lastGraphRefreshKeyRef.current = graphRefreshKey
 
-    const loadGraph = async (force = false) => {
+    if (lastGraphRunIdRef.current && lastGraphRunIdRef.current !== currentRunId) {
+      setGraphData(null)
+      graphSignatureRef.current = ''
+    }
+    lastGraphRunIdRef.current = currentRunId
+
+    const loadGraph = async () => {
       setGraphLoading(true)
       try {
-        const response = await fetch(`/api/simulation/runs/${selectedRun.run_id}/graph`)
+        const response = await fetch(`/api/simulation/runs/${currentRunId}/graph`)
         if (!response.ok) throw new Error('graph fetch failed')
-        const data = await response.json() as { nodes?: KGNode[]; edges?: KGLink[] }
+        const raw = await response.json() as { nodes?: KGNode[]; edges?: KGLink[] }
         if (!active) return
-        const nextGraph = {
-          nodes: Array.isArray(data.nodes) ? data.nodes : [],
-          edges: Array.isArray(data.edges) ? data.edges : [],
-        }
-        const nextSignature = buildGraphSnapshotSignature(nextGraph)
-        if (force || nextSignature !== graphSignatureRef.current) {
+        const nextGraph = normalizeGraphPayload(raw)
+        const nextSignature = getGraphPayloadSignature(nextGraph)
+        if (forceRefresh || graphSignatureRef.current !== nextSignature) {
           graphSignatureRef.current = nextSignature
           setGraphData(nextGraph)
         }
       } catch {
         if (!active) return
-        graphSignatureRef.current = ''
-        setGraphData(null)
       } finally {
         if (active) setGraphLoading(false)
       }
@@ -750,7 +762,7 @@ export default function SimulationPage() {
       setGraphData(null)
     }
 
-    void loadGraph(runChanged || refreshRequested)
+    void loadGraph()
     const id = setInterval(() => {
       void loadGraph()
     }, selectedRun.status === 'running' ? 5000 : 12000)
@@ -759,9 +771,39 @@ export default function SimulationPage() {
       active = false
       clearInterval(id)
     }
-  }, [selectedRun?.run_id, selectedRun?.status, graphRefreshKey])
+  }, [selectedRun?.run_id, selectedRun?.status, selectedRun?.rounds_completed, graphRefreshKey])
 
-  // Poll runs list every 10s to keep status fresh; sync selected run status every 3s
+  useEffect(() => {
+    if (runs.length === 0) {
+      if (selectedRun) setSelectedRun(null)
+      return
+    }
+    if (selectedRun && runs.some((run) => run.run_id === selectedRun.run_id)) {
+      return
+    }
+    setSelectedRun(runs[0])
+  }, [runs, selectedRun])
+
+  const hasCollapsedRuns = runs.length > RUNS_COLLAPSED_LIMIT
+
+  const visibleRuns = useMemo(() => {
+    if (!hasCollapsedRuns || runsExpanded) {
+      return runs
+    }
+
+    const recentRuns = runs.slice(0, RUNS_COLLAPSED_LIMIT)
+    if (!selectedRun) {
+      return recentRuns
+    }
+
+    const selectedIndex = runs.findIndex((run) => run.run_id === selectedRun.run_id)
+    if (selectedIndex === -1 || selectedIndex < RUNS_COLLAPSED_LIMIT) {
+      return recentRuns
+    }
+
+    return [runs[selectedIndex], ...recentRuns.filter((run) => run.run_id !== selectedRun.run_id)]
+  }, [hasCollapsedRuns, runs, runsExpanded, selectedRun])
+
   useEffect(() => {
     const loadRuns = () => {
       fetch('/api/simulation/runs')
@@ -997,12 +1039,12 @@ export default function SimulationPage() {
     graph: {
       label: '图谱主视图',
       description: '把未来关系图谱切成页面主舞台，专注读边、看路径、检查节点与关系，不再需要额外全屏遮罩。',
-      status: '图谱主视图',
+      status: '图谱优先',
     },
     split: {
-      label: '双栏推演台',
-      description: '左侧保留输入与记录，中间图谱主导，右侧工作台同步服务当前预测过程。',
-      status: '双栏协同中',
+      label: '双栏模式',
+      description: '左侧保留输入与记录，中间图谱主导，右侧同步查看平台态势、报告与运行细节。',
+      status: '双栏联动',
     },
     workbench: {
       label: '工作台模式',
@@ -1014,7 +1056,7 @@ export default function SimulationPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-6)' }}>
 
-      {/* ── MiroFish-style Header ───────────────────────────────── */}
+      {/* ── 页面头部 ─────────────────────────────────────────────── */}
       <div style={{
         display: 'flex',
         alignItems: 'center',
@@ -1027,7 +1069,7 @@ export default function SimulationPage() {
       }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
-            MiroFish 风格未来预测台 · {activeModeMeta.label}
+            未来预测 · {activeModeMeta.label}
           </div>
           <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: 4 }}>
             {activeModeMeta.description} 当前状态：{selectedRun?.status === 'running' ? '未来路径生成中' : selectedRun?.status === 'completed' ? '已完成，可查看报告' : selectedRun ? '记录已就绪，等待启动' : activeModeMeta.status}
@@ -1091,9 +1133,9 @@ export default function SimulationPage() {
       </div>
 
       <WorkflowGuide
-        eyebrow="FUTURE FORECAST PLAYBOOK"
+        eyebrow="FUTURE FORECAST FLOW"
         title="先建记录，再启动预测，再读未来路径"
-        description="这一页已经按 MiroFish 的工作台节奏收口。先把输入固化，再启动未来预测，最后查看图谱、行动流和报告，会比直接一把梭更稳。"
+        description="先把议题输入固化成预测记录，再启动推演，随后结合图谱、行动流和报告持续检查未来路径。"
         steps={workflowSteps}
         actions={
           <>
@@ -1379,32 +1421,43 @@ export default function SimulationPage() {
             ) : runs.length === 0 ? (
               <div className="empty-state"><FishEmptyIcon /><p>暂无预测记录</p></div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: 'var(--sp-2)' }}>
-                {runs.map(run => (
-                  <div key={run.run_id} onClick={() => setSelectedRun(run)} style={{
-                    padding: 'var(--sp-3)', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
-                    border: `1px solid ${selectedRun?.run_id === run.run_id ? 'var(--accent)' : 'transparent'}`,
-                    background: selectedRun?.run_id === run.run_id ? 'var(--accent-dim)' : 'transparent',
-                    transition: 'all var(--t-fast)',
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', gap: 'var(--sp-2)', alignItems: 'center', marginBottom: 3 }}>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'var(--accent)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 120 }}>
-                          {run.run_id}
-                        </span>
-                        {statusBadge(run.status)}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)', padding: 'var(--sp-2)' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: runsExpanded ? 360 : undefined, overflowY: runsExpanded ? 'auto' : undefined, paddingRight: runsExpanded ? 4 : 0 }}>
+                  {visibleRuns.map(run => (
+                    <div key={run.run_id} onClick={() => setSelectedRun(run)} style={{
+                      padding: 'var(--sp-3)', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                      border: `1px solid ${selectedRun?.run_id === run.run_id ? 'var(--accent)' : 'transparent'}`,
+                      background: selectedRun?.run_id === run.run_id ? 'var(--accent-dim)' : 'transparent',
+                      transition: 'all var(--t-fast)',
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', gap: 'var(--sp-2)', alignItems: 'center', marginBottom: 3 }}>
+                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'var(--accent)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 120 }}>
+                            {run.run_id}
+                          </span>
+                          {statusBadge(run.status)}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          {run.rounds_completed} 轮 · {run.convergence_achieved ? '已收敛' : '未收敛'}
+                        </div>
                       </div>
-                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                        {run.rounds_completed} 轮 · {run.convergence_achieved ? '已收敛' : '未收敛'}
-                      </div>
+                      <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); handleDelete(run.run_id) }}
+                        style={{ color: 'var(--text-muted)', padding: '2px 6px' }}>
+                        <CloseIcon />
+                      </button>
                     </div>
-                    <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); handleDelete(run.run_id) }}
-                      style={{ color: 'var(--text-muted)', padding: '2px 6px' }}>
-                      <CloseIcon />
-                    </button>
-                  </div>
-                ))}
+                  ))}
+                </div>
+                {hasCollapsedRuns ? (
+                  <button
+                    type="button"
+                    onClick={() => setRunsExpanded(prev => !prev)}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.68rem', alignSelf: 'flex-start', padding: '2px 0' }}
+                  >
+                    {runsExpanded ? '收起记录' : `展开全部记录（${runs.length}）`}
+                  </button>
+                ) : null}
               </div>
             )}
           </div>
@@ -1580,7 +1633,7 @@ export default function SimulationPage() {
               </div>
             )}
             <div style={{
-              height: viewMode === 'graph' ? 'calc(100vh - 148px)' : 760,
+              height: viewMode === 'graph' ? 'calc(100vh - 128px)' : 760,
               background: 'var(--bg-surface)',
               border: '1px solid var(--border)',
               borderRadius: viewMode === 'graph' ? '20px' : 'var(--radius)',
