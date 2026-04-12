@@ -1,6 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
-import { useIntelligenceStore, type ObservationCountryContext } from '../../stores/intelligenceStore'
+import {
+  useIntelligenceStore,
+  type IntelligenceSignalsResponse,
+  type ObservationCountryContext,
+} from '../../stores/intelligenceStore'
 import { useSimulationDraftStore } from '../../stores/simulationDraftStore'
 import WorkflowGuide, { type WorkflowGuideStep } from '../WorkflowGuide'
 
@@ -390,123 +394,128 @@ export default function Intelligence() {
   const autoStartedRef = useRef(false)
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const injectedSignals = useIntelligenceStore((state) => state.injectedSignals)
+  const overviewCache = useIntelligenceStore((state) => state.overviewCache)
+  const signalsCache = useIntelligenceStore((state) => state.signalsCache)
+  const refreshOverviewCache = useIntelligenceStore((state) => state.refreshOverviewCache)
+  const warmOverviewCache = useIntelligenceStore((state) => state.warmOverviewCache)
+  const refreshSignalsCache = useIntelligenceStore((state) => state.refreshSignalsCache)
+  const ensureWorldMonitorRunning = useIntelligenceStore((state) => state.ensureWorldMonitorRunning)
   const injectSignal = useIntelligenceStore((state) => state.injectSignal)
   const setActiveCountryContext = useIntelligenceStore((state) => state.setActiveCountryContext)
   const setDraft = useSimulationDraftStore((state) => state.setDraft)
 
-  const loadObservation = useCallback(async () => {
-    try {
-      const [signalsRes, ciiRes, wmRes, newsRes, focalRes] = await Promise.all([
-        fetch(`/api/intelligence/signals${domain !== 'all' ? `?domain=${domain}` : ''}`),
-        fetch('/api/intelligence/cii'),
-        fetch('/api/intelligence/world-monitor/status'),
-        fetch(`/api/intelligence/news?limit=24${domain !== 'all' ? `&domain=${domain}` : ''}`),
-        fetch('/api/intelligence/focal-points'),
-      ])
+  const refreshCountryContext = useCallback(async (countryIso: string, signal?: AbortSignal) => {
+    const response = await fetch(`/api/intelligence/country-context/${countryIso}`, { signal })
+    if (!response.ok) throw new Error('country-context')
+    const payload = await response.json() as CountryContextPayload
+    return {
+      ...payload,
+      signals: {
+        ...payload.signals,
+        items: (payload.signals?.items ?? []).map(normalizeContextSignal),
+      },
+    }
+  }, [])
 
-      if (signalsRes.ok) {
-        const payload = await signalsRes.json()
-        const flatSignals = toSignalList(payload)
-        setSignals(flatSignals)
-        setLiveFeed(prev => {
-          const next = [...prev]
-          for (const signal of flatSignals.slice(0, 18)) {
-            const key = `signal:${signal.id}`
-            if (feedSeenIds.current.has(key)) continue
-            feedSeenIds.current.add(key)
-            next.unshift({
-              id: key,
-              kind: 'signal',
-              title: `${signal.country || 'GLOBAL'} 出现${SIGNAL_TYPE_ZH[signal.type] ?? signal.type}信号`,
-              description: signal.description || `${signal.source || 'OrcaFish Monitor'} 捕获到新的态势变化`,
-              country: signal.country,
-              timestamp: signal.timestamp || new Date().toISOString(),
-              tone: (signal.cii_score ?? 0) >= 85 ? 'critical' : (signal.cii_score ?? 0) >= 60 ? 'high' : 'watch',
-            })
-          }
-          return next.slice(0, 36)
+  const syncObservationFromCache = useCallback((signalPayload?: IntelligenceSignalsResponse | null) => {
+    const flatSignals = signalPayload ? toSignalList(signalPayload) : []
+    setSignals(flatSignals)
+    setCiiScores(parseCiiScores(overviewCache.cii))
+    setWmStatus((overviewCache.wmStatus as WMStatus | null) ?? { running: false, last_poll: null, poll_interval: 60, cii_threshold: 65 })
+    setNewsItems((overviewCache.newsItems as NewsItem[]) ?? [])
+    setFocalPoints((overviewCache.focalPoints as FocalPoint[]) ?? [])
+
+    setLiveFeed(prev => {
+      const next = [...prev]
+
+      for (const signal of flatSignals.slice(0, 18)) {
+        const key = `signal:${signal.id}`
+        if (feedSeenIds.current.has(key)) continue
+        feedSeenIds.current.add(key)
+        next.unshift({
+          id: key,
+          kind: 'signal',
+          title: `${signal.country || 'GLOBAL'} 出现${SIGNAL_TYPE_ZH[signal.type] ?? signal.type}信号`,
+          description: signal.description || `${signal.source || 'OrcaFish Monitor'} 捕获到新的态势变化`,
+          country: signal.country,
+          timestamp: signal.timestamp || new Date().toISOString(),
+          tone: (signal.cii_score ?? 0) >= 85 ? 'critical' : (signal.cii_score ?? 0) >= 60 ? 'high' : 'watch',
         })
       }
 
-      if (ciiRes.ok) {
-        const payload = await ciiRes.json()
-        setCiiScores(parseCiiScores(payload))
-      }
-
-      if (wmRes.ok) {
-        const payload = await wmRes.json()
-        setWmStatus(payload)
-        if (payload.latest_event) {
-          const event = payload.latest_event
-          const key = `status:${event.id}`
-          if (!feedSeenIds.current.has(key)) {
-            feedSeenIds.current.add(key)
-            setLiveFeed((prev) => [{
-              id: key,
-              kind: (event.kind === 'signal' ? 'signal' : 'news') as 'signal' | 'news' | 'focal',
-              title: event.title,
-              description: event.description,
-              country: event.country_iso,
-              timestamp: event.timestamp,
-              tone: severityTone(event.severity),
-            }, ...prev].slice(0, 40))
-          }
+      if (overviewCache.wmStatus?.latest_event) {
+        const event = overviewCache.wmStatus.latest_event
+        const key = `status:${event.id}`
+        if (!feedSeenIds.current.has(key)) {
+          feedSeenIds.current.add(key)
+          next.unshift({
+            id: key,
+            kind: (event.kind === 'signal' ? 'signal' : 'news') as 'signal' | 'news' | 'focal',
+            title: event.title,
+            description: event.description,
+            country: event.country_iso,
+            timestamp: event.timestamp,
+            tone: severityTone(event.severity),
+          })
         }
       }
 
-      if (newsRes.ok) {
-        const payload = await newsRes.json()
-        const items = payload.items ?? []
-        setNewsItems(items)
-        setLiveFeed(prev => {
-          const next = [...prev]
-          for (const item of items) {
-            const key = `news:${item.id}`
-            if (feedSeenIds.current.has(key)) continue
-            feedSeenIds.current.add(key)
-            next.unshift({
-              id: key,
-              kind: 'news',
-              title: item.title,
-              description: item.summary || item.source || '监控新闻到达',
-              country: item.country_iso,
-              timestamp: item.published_at || new Date().toISOString(),
-              tone: 'watch',
-            })
-          }
-          return next.slice(0, 32)
+      for (const item of overviewCache.newsItems ?? []) {
+        const key = `news:${item.id}`
+        if (feedSeenIds.current.has(key)) continue
+        feedSeenIds.current.add(key)
+        next.unshift({
+          id: key,
+          kind: 'news',
+          title: item.title,
+          description: item.summary || item.source || '监控新闻到达',
+          country: item.country_iso,
+          timestamp: item.published_at || new Date().toISOString(),
+          tone: 'watch',
         })
       }
 
-      if (focalRes.ok) {
-        const payload = await focalRes.json()
-        const points = payload.items ?? []
-        setFocalPoints(points)
-        setLiveFeed(prev => {
-          const next = [...prev]
-          for (const point of points) {
-            const key = `focal:${point.entity_id}:${point.narrative}`
-            if (feedSeenIds.current.has(key)) continue
-            feedSeenIds.current.add(key)
-            next.unshift({
-              id: key,
-              kind: 'focal',
-              title: `${point.entity_id} 进入 Agent 关注焦点`,
-              description: point.narrative,
-              country: point.entity_id,
-              timestamp: new Date().toISOString(),
-              tone: point.urgency === 'critical' ? 'critical' : point.urgency === 'high' ? 'high' : 'watch',
-            })
-          }
-          return next.slice(0, 32)
+      for (const point of overviewCache.focalPoints ?? []) {
+        const key = `focal:${point.entity_id}:${point.narrative}`
+        if (feedSeenIds.current.has(key)) continue
+        feedSeenIds.current.add(key)
+        next.unshift({
+          id: key,
+          kind: 'focal',
+          title: `${point.entity_id} 进入 Agent 关注焦点`,
+          description: point.narrative,
+          country: point.entity_id,
+          timestamp: new Date().toISOString(),
+          tone: point.urgency === 'critical' ? 'critical' : point.urgency === 'high' ? 'high' : 'watch',
         })
       }
+
+      return next
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, 40)
+    })
+  }, [overviewCache])
+
+  const loadObservation = useCallback(async (force = false) => {
+    try {
+      if (!force) {
+        await warmOverviewCache()
+      }
+      await Promise.all([
+        refreshOverviewCache(force),
+        refreshSignalsCache(domain, force),
+      ])
     } catch {
       // keep previous frame when polling fails
     } finally {
       setLoading(false)
     }
-  }, [domain])
+  }, [domain, refreshOverviewCache, refreshSignalsCache, warmOverviewCache])
+
+  useEffect(() => {
+    const cachedSignals = signalsCache[domain]?.payload ?? null
+    syncObservationFromCache(cachedSignals)
+  }, [domain, signalsCache, syncObservationFromCache])
 
   useEffect(() => {
     void loadObservation()
@@ -514,8 +523,8 @@ export default function Intelligence() {
 
   useEffect(() => {
     const timer = setInterval(() => {
-      void loadObservation()
-    }, 7000)
+      void loadObservation(true)
+    }, 15000)
     return () => clearInterval(timer)
   }, [loadObservation])
 
@@ -532,10 +541,10 @@ export default function Intelligence() {
   useEffect(() => {
     if (wmStatus.running || autoStartedRef.current) return
     autoStartedRef.current = true
-    void fetch('/api/intelligence/world-monitor/start', { method: 'POST' })
+    void ensureWorldMonitorRunning()
       .then(() => loadObservation())
       .catch(() => undefined)
-  }, [loadObservation, wmStatus.running])
+  }, [ensureWorldMonitorRunning, loadObservation, wmStatus.running])
 
   useEffect(() => {
     if (!selectedCountryIso) {
@@ -544,27 +553,59 @@ export default function Intelligence() {
     }
 
     const controller = new AbortController()
-    setCountryContext(null)
+    const signalPayload = signalsCache[domain]?.payload
+    const signalItems = signalPayload ? toSignalList(signalPayload) : []
+    const selectedCountryScore = ciiScores.find((country) => country.iso === selectedCountryIso) ?? null
+    const selectedCountryNewsItems = getCountryNews(overviewCache.newsItems as NewsItem[], selectedCountryIso, 4)
+    const selectedCountryFocalPoint = getCountryFocalPoint(overviewCache.focalPoints as FocalPoint[], selectedCountryIso)
 
-    void fetch(`/api/intelligence/country-context/${selectedCountryIso}`, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error('country-context')
-        return response.json()
-      })
-      .then((payload: CountryContextPayload) => {
+    setCountryContext((current) => {
+      if (current?.iso === selectedCountryIso) return current
+      if (!selectedCountryScore) return null
+      return {
+        iso: selectedCountryIso,
+        country: {
+          code: selectedCountryIso,
+          name: selectedCountryScore.name ?? selectedCountryIso,
+          score: selectedCountryScore.score,
+          level: selectedCountryScore.level,
+          components: selectedCountryScore.components,
+        },
+        monitor: overviewCache.wmStatus,
+        summary: {
+          risk_level: selectedCountryScore.level,
+          news_count: selectedCountryNewsItems.length,
+          signal_count: getCountrySignals(signalItems, selectedCountryIso).length,
+          focal_count: selectedCountryFocalPoint ? 1 : 0,
+          top_signal_types: selectedCountryScore.monitoring?.top_signal_types ?? [],
+          top_headlines: selectedCountryScore.monitoring?.top_headlines ?? selectedCountryNewsItems.map((item) => item.title).slice(0, 3),
+          latest_activity: selectedCountryScore.monitoring?.last_event ?? null,
+          narrative: selectedCountryScore.monitoring?.rationale ?? selectedCountryFocalPoint?.narrative ?? '正在汇聚更多观测线索。',
+          drivers: selectedCountryScore.monitoring?.drivers,
+          rationale: selectedCountryScore.monitoring?.rationale,
+          new_events_15m: selectedCountryScore.monitoring?.new_events_15m,
+          momentum: selectedCountryScore.monitoring?.momentum,
+          source_count: selectedCountryScore.monitoring?.source_count,
+          source_diversity: selectedCountryScore.monitoring?.source_diversity,
+          freshness: selectedCountryScore.monitoring?.freshness,
+          escalation: selectedCountryScore.monitoring?.escalation,
+          convergence_score: selectedCountryScore.monitoring?.convergence_score,
+        },
+        news: { count: selectedCountryNewsItems.length, items: selectedCountryNewsItems },
+        signals: { count: getCountrySignals(signalItems, selectedCountryIso).length, items: getCountrySignals(signalItems, selectedCountryIso) },
+        focal_points: { count: selectedCountryFocalPoint ? 1 : 0, items: selectedCountryFocalPoint ? [selectedCountryFocalPoint] : [] },
+      }
+    })
+
+    void refreshCountryContext(selectedCountryIso, controller.signal)
+      .then((payload) => {
         if (payload.iso !== selectedCountryIso) return
-        setCountryContext({
-          ...payload,
-          signals: {
-            ...payload.signals,
-            items: (payload.signals?.items ?? []).map(normalizeContextSignal),
-          },
-        })
+        setCountryContext(payload)
       })
       .catch(() => undefined)
 
     return () => controller.abort()
-  }, [selectedCountryIso])
+  }, [ciiScores, domain, overviewCache.focalPoints, overviewCache.newsItems, refreshCountryContext, selectedCountryIso, signalsCache])
 
   useEffect(() => {
     if (!selectedCountryIso) return
@@ -576,9 +617,13 @@ export default function Intelligence() {
   }, [ciiScores, selectedCountryIso])
 
   const toggleMonitor = async () => {
-    const endpoint = wmStatus.running ? '/api/intelligence/world-monitor/stop' : '/api/intelligence/world-monitor/start'
-    await fetch(endpoint, { method: 'POST' })
-    await loadObservation()
+    if (wmStatus.running) {
+      await fetch('/api/intelligence/world-monitor/stop', { method: 'POST' })
+      await loadObservation(true)
+      return
+    }
+    await ensureWorldMonitorRunning()
+    await loadObservation(true)
   }
 
   const criticalCount = ciiScores.filter((country) => country.level === 'critical' || country.level === 'high').length
@@ -607,7 +652,7 @@ export default function Intelligence() {
     getCountryNews(newsItems, focusCountry?.iso, 4)
   ), [focusCountry?.iso, newsItems])
   const activeFeed = useMemo(() => (
-    liveFeed
+    [...liveFeed]
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .slice(0, 10)
   ), [liveFeed])

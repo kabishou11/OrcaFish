@@ -8,6 +8,7 @@ import asyncio
 from html import escape
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from backend.models.simulation import (
@@ -21,6 +22,9 @@ from backend.simulation import (
 )
 from backend.simulation.manager import SimulationManager
 from backend.simulation.runner import SimulationRunner
+from backend.analysis.agents.base import SearchResult, build_source_facts_from_results
+from backend.analysis.agents.media import MediaAgent
+from backend.analysis.agents.query import QueryAgent
 from backend.llm.client import LLMClient
 from backend.config import settings
 
@@ -42,6 +46,212 @@ _CREATE_TASK = asyncio.create_task
 # the active Analysis -> /simulation workbench flow.
 # In-memory simulation run registry (replace with DB in production)
 _run_registry: Dict[str, dict] = {}
+_RUN_STATE_FILENAME = "run_state.json"
+
+
+def _parse_iso_datetime(value: str | None) -> Optional[datetime]:
+    text = _normalize_text(value or "")
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _run_state_path(sim_id: str) -> str:
+    return os.path.join(_simulation_data_dir(), sim_id, _RUN_STATE_FILENAME)
+
+
+def _build_final_states_from_actions(actions_file: str) -> List[dict]:
+    final_states: List[dict] = []
+    if not os.path.exists(actions_file):
+        return final_states
+
+    seen_agents: Dict[str, Dict[str, float]] = {}
+    with open(actions_file, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+            agent_id = str(entry.get("agent_id") or "")
+            if not agent_id:
+                continue
+            if agent_id not in seen_agents:
+                seen_agents[agent_id] = {
+                    "actions": 0,
+                    "belief_sum": 0.0,
+                    "influence_sum": 0.0,
+                }
+            seen_agents[agent_id]["actions"] += 1
+            stable_seed = uuid.uuid5(uuid.NAMESPACE_DNS, agent_id).int
+            base = (stable_seed % 100) / 100
+            seen_agents[agent_id]["belief_sum"] += 0.3 + base * 0.5
+            seen_agents[agent_id]["influence_sum"] += 0.2 + (seen_agents[agent_id]["actions"] / 50)
+
+    for agent_id, stats in seen_agents.items():
+        stable_seed = uuid.uuid5(uuid.NAMESPACE_DNS, agent_id).int
+        belief = min(stats["belief_sum"] / max(stats["actions"], 1), 0.99)
+        influence = min(stats["influence_sum"] / max(stats["actions"], 1), 0.99)
+        px = round(((stable_seed % 1800) / 1000) - 0.9, 4)
+        py = round((((stable_seed // 1800) % 1800) / 1000) - 0.9, 4)
+        final_states.append({
+            "id": agent_id,
+            "position": [px, py],
+            "belief": round(belief, 4),
+            "influence": round(influence, 4),
+            "actions": stats["actions"],
+        })
+
+    return final_states
+
+
+def _persist_run_snapshot(run: dict) -> None:
+    sim_id = str(run.get("simulation_id") or "")
+    if not sim_id:
+        return
+    state_path = _run_state_path(sim_id)
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    with open(state_path, "w", encoding="utf-8") as f:
+        json.dump(run, f, ensure_ascii=False, indent=2)
+
+
+def _delete_run_snapshot(sim_id: str) -> None:
+    state_path = _run_state_path(sim_id)
+    if os.path.exists(state_path):
+        os.remove(state_path)
+
+
+def _restore_run_from_disk(sim_id: str) -> Optional[dict]:
+    sim_dir = os.path.join(_simulation_data_dir(), sim_id)
+    config_path = os.path.join(sim_dir, "simulation_config.json")
+    if not os.path.exists(config_path):
+        return None
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception:
+        return None
+
+    state_path = _run_state_path(sim_id)
+    persisted_state: Dict[str, Any] = {}
+    if os.path.exists(state_path):
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                persisted_state = json.load(f)
+        except Exception:
+            persisted_state = {}
+
+    actions_file = os.path.join(sim_dir, "actions.jsonl")
+    rounds_completed = 0
+    created_at = persisted_state.get("created_at")
+    started_at = persisted_state.get("started_at")
+    latest_action_at = None
+
+    if os.path.exists(actions_file):
+        with open(actions_file, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    action = json.loads(line)
+                except Exception:
+                    continue
+                rounds_completed = max(rounds_completed, int(action.get("round_num") or 0))
+                timestamp = str(action.get("timestamp") or "")
+                if timestamp and not started_at:
+                    started_at = timestamp
+                if timestamp:
+                    latest_action_at = timestamp
+
+    max_rounds = int(
+        persisted_state.get("max_rounds")
+        or config.get("max_rounds")
+        or (config.get("time_config") or {}).get("total_rounds")
+        or settings.simulation_rounds
+    )
+
+    if not created_at:
+        created_at = datetime.fromtimestamp(os.path.getmtime(config_path), UTC).isoformat()
+
+    duration_ms = persisted_state.get("duration_ms")
+    if duration_ms is None:
+        started_dt = _parse_iso_datetime(started_at)
+        latest_dt = _parse_iso_datetime(latest_action_at)
+        if started_dt and latest_dt:
+            duration_ms = max(int((latest_dt - started_dt).total_seconds() * 1000), 0)
+
+    status = str(persisted_state.get("status") or "")
+    if not status:
+        if rounds_completed <= 0:
+            status = "created"
+        elif rounds_completed >= max_rounds:
+            status = "completed"
+        else:
+            status = "paused"
+
+    final_states = persisted_state.get("final_states")
+    if not isinstance(final_states, list) or not final_states:
+        final_states = _build_final_states_from_actions(actions_file)
+
+    run_config = persisted_state.get("run_config") if isinstance(persisted_state.get("run_config"), dict) else {
+        "name": config.get("name", "未来预测"),
+        "seed_content": config.get("seed_content", ""),
+        "simulation_requirement": config.get("simulation_requirement", ""),
+        "max_rounds": max_rounds,
+        "enable_twitter": bool(config.get("enable_twitter", True)),
+        "enable_reddit": bool(config.get("enable_reddit", True)),
+    }
+
+    run = {
+        "run_id": persisted_state.get("run_id") or f"run_{sim_id[4:]}",
+        "simulation_id": sim_id,
+        "status": status,
+        "stop_requested": bool(persisted_state.get("stop_requested", False)),
+        "rounds_completed": int(persisted_state.get("rounds_completed") or rounds_completed),
+        "convergence_achieved": bool(
+            persisted_state.get("convergence_achieved")
+            if "convergence_achieved" in persisted_state
+            else rounds_completed >= max_rounds
+        ),
+        "scenario": persisted_state.get("scenario") or config.get("name", "未来预测"),
+        "max_rounds": max_rounds,
+        "created_at": created_at,
+        "started_at": started_at,
+        "final_states": final_states,
+        "duration_ms": duration_ms,
+        "seed_content": persisted_state.get("seed_content") or config.get("seed_content", ""),
+        "simulation_requirement": persisted_state.get("simulation_requirement") or config.get("simulation_requirement", ""),
+        "run_config": run_config,
+        "project_id": persisted_state.get("project_id") or config.get("project_id", ""),
+        "graph_id": persisted_state.get("graph_id") or config.get("graph_id", ""),
+        "graph_source": persisted_state.get("graph_source") or config.get("graph_source", "local_only"),
+        "graph_entity_count": int(persisted_state.get("graph_entity_count") or config.get("graph_entity_count") or 0),
+        "graph_relation_count": int(persisted_state.get("graph_relation_count") or config.get("graph_relation_count") or 0),
+        "graph_entity_types": persisted_state.get("graph_entity_types") or config.get("graph_entity_types") or [],
+        "graph_synced_at": persisted_state.get("graph_synced_at") or config.get("graph_synced_at"),
+        "node_count": int(persisted_state.get("node_count") or persisted_state.get("graph_entity_count") or config.get("graph_entity_count") or 0),
+        "edge_count": int(persisted_state.get("edge_count") or persisted_state.get("graph_relation_count") or config.get("graph_relation_count") or 0),
+    }
+    if persisted_state.get("error"):
+        run["error"] = persisted_state["error"]
+    return run
+
+
+def _ensure_run_registry_loaded() -> None:
+    data_dir = _simulation_data_dir()
+    for name in os.listdir(data_dir):
+        if not name.startswith("sim_"):
+            continue
+        run = _restore_run_from_disk(name)
+        if not run:
+            continue
+        _run_registry.setdefault(run["run_id"], run)
+
 
 # Default scenarios
 _DEFAULT_SCENARIOS = [
@@ -182,6 +392,235 @@ def _extract_seed_entities(text: str) -> List[Dict[str, str]]:
         if len(entities) >= 12:
             break
     return entities[:12]
+
+
+_SIMULATION_REPORT_FACT_LIMIT = 10
+
+
+def _source_label_from_url(url: str) -> str:
+    host = urlparse(url).netloc.lower().strip()
+    if host.startswith("www."):
+        host = host[4:]
+    return host or "外部来源"
+
+
+def _normalize_source_fact(fact: dict[str, str]) -> dict[str, str]:
+    return {
+        "title": str(fact.get("title") or "未命名来源").strip() or "未命名来源",
+        "source": str(fact.get("source") or "外部来源").strip() or "外部来源",
+        "url": str(fact.get("url") or "").strip(),
+        "summary": str(fact.get("summary") or "").strip(),
+        "paragraph_title": str(fact.get("paragraph_title") or "").strip(),
+        "published_at": str(fact.get("published_at") or "").strip(),
+    }
+
+
+def _build_source_fact_from_result(result: SearchResult, paragraph_title: str = "") -> dict[str, str]:
+    summary = " ".join((result.content or "").split())[:220]
+    title = (result.title or "").strip() or (summary[:48] if summary else "未命名来源")
+    return _normalize_source_fact(
+        {
+            "title": title,
+            "source": _source_label_from_url(result.url),
+            "url": (result.url or "").strip(),
+            "summary": summary or "检索已命中该来源，但正文摘要仍在补全。",
+            "paragraph_title": paragraph_title,
+        }
+    )
+
+
+def _merge_source_facts(source_facts: list[dict[str, str]], limit: int = _SIMULATION_REPORT_FACT_LIMIT) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for fact in source_facts:
+        normalized = _normalize_source_fact(fact)
+        identity = normalized["url"] or f"{normalized['source']}::{normalized['title']}"
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(normalized)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def _format_source_fact_lines(source_facts: list[dict[str, str]], limit: int = 6) -> list[str]:
+    lines: list[str] = []
+    for fact in source_facts[:limit]:
+        meta_parts = [
+            part for part in [
+                fact.get("source", ""),
+                fact.get("published_at", ""),
+                fact.get("paragraph_title", ""),
+            ] if part
+        ]
+        line = f"- {fact.get('title', '未命名来源')}（{' · '.join(meta_parts) or '外部来源'}）"
+        summary = (fact.get("summary") or "").strip()
+        if summary:
+            line += f"\n  {summary[:180]}"
+        url = (fact.get("url") or "").strip()
+        if url:
+            line += f"\n  链接：{url}"
+        lines.append(line)
+    return lines
+
+
+def _html_list(items: list[str], empty_text: str) -> str:
+    if not items:
+        return f"<li>{escape(empty_text)}</li>"
+    return "".join(f"<li>{escape(item)}</li>" for item in items)
+
+
+def _collect_external_queries(
+    seed: str,
+    seed_content: str,
+    simulation_requirement: str,
+    top_topics: list[tuple[str, dict[str, Any]]],
+    recent_events: list[str],
+) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def push(value: str) -> None:
+        text = _normalize_text(value)
+        if not text or text in seen:
+            return
+        seen.add(text)
+        candidates.append(text)
+
+    push(seed)
+
+    for topic_name, _ in top_topics[:3]:
+        topic = _normalize_topic_name(str(topic_name))
+        if not topic:
+            continue
+        push(f"{seed} {topic} 最新进展")
+
+    entity_names = [item["name"] for item in _extract_seed_entities(f"{seed} {seed_content} {simulation_requirement}")[:4]]
+    if entity_names:
+        push(" ".join(entity_names[:3]) + " 最新动态")
+
+    for event in recent_events[:2]:
+        if len(event) >= 8:
+            push(event[:48])
+
+    if simulation_requirement:
+        push(f"{seed} {simulation_requirement[:24]} 最新消息")
+
+    return candidates[:4]
+
+
+async def _run_external_search(query: str) -> tuple[list[SearchResult], str]:
+    results: list[SearchResult] = []
+
+    query_client = LLMClient(
+        api_key=settings.query_llm.api_key,
+        base_url=settings.query_llm.base_url,
+        model=settings.query_llm.model,
+        provider=settings.query_llm.provider,
+        timeout=settings.query_llm.timeout,
+        reasoning_split=settings.query_llm.reasoning_split,
+    )
+    query_agent = QueryAgent(query_client, tavily_api_key=settings.tavily_api_key)
+    try:
+        results = await query_agent.execute_search(query)
+    except Exception:
+        results = []
+    if results:
+        return results, "query"
+
+    media_client = LLMClient(
+        api_key=settings.media_llm.api_key,
+        base_url=settings.media_llm.base_url,
+        model=settings.media_llm.model,
+        provider=settings.media_llm.provider,
+        timeout=settings.media_llm.timeout,
+        reasoning_split=settings.media_llm.reasoning_split,
+    )
+    media_agent = MediaAgent(media_client)
+    try:
+        results = await media_agent.execute_search(query)
+    except Exception:
+        results = []
+    return results, "media" if results else "none"
+
+
+async def _build_simulation_external_calibration(
+    seed: str,
+    seed_content: str,
+    simulation_requirement: str,
+    top_topics: list[tuple[str, dict[str, Any]]],
+    recent_events: list[str],
+) -> dict[str, Any]:
+    queries = _collect_external_queries(seed, seed_content, simulation_requirement, top_topics, recent_events)
+    if not queries:
+        return {
+            "queries": [],
+            "source_facts": [],
+            "source_lines": [],
+            "query_to_facts": {},
+            "matched_topics": [],
+            "calibration_note": "本次未能生成有效外部检索词，以下主体仍以内部推演轨迹为主。",
+            "status": "insufficient",
+            "provider_hits": {},
+        }
+
+    search_runs = await asyncio.gather(*[_run_external_search(query) for query in queries], return_exceptions=True)
+    provider_hits: Dict[str, int] = {"query": 0, "media": 0}
+    collected_facts: list[dict[str, str]] = []
+    query_to_facts: Dict[str, list[dict[str, str]]] = {}
+
+    for query, payload in zip(queries, search_runs):
+        if isinstance(payload, Exception):
+            query_to_facts[query] = []
+            continue
+        results, provider = payload
+        if provider in provider_hits and results:
+            provider_hits[provider] += len(results)
+        facts = build_source_facts_from_results(results, limit=3, paragraph_title=query)
+        if not facts:
+            facts = [_build_source_fact_from_result(result, paragraph_title=query) for result in results[:3]]
+        normalized_facts = [_normalize_source_fact(fact) for fact in facts]
+        query_to_facts[query] = normalized_facts
+        collected_facts.extend(normalized_facts)
+
+    merged_source_facts = _merge_source_facts(collected_facts, limit=_SIMULATION_REPORT_FACT_LIMIT)
+    matched_topics = []
+    seen_topics: set[str] = set()
+    for topic_name, _ in top_topics[:6]:
+        topic = _normalize_topic_name(str(topic_name))
+        if not topic or topic in seen_topics:
+            continue
+        for fact in merged_source_facts:
+            haystack = " ".join([
+                fact.get("title", ""),
+                fact.get("summary", ""),
+                fact.get("paragraph_title", ""),
+            ])
+            if topic and topic in haystack:
+                seen_topics.add(topic)
+                matched_topics.append(topic)
+                break
+
+    if merged_source_facts:
+        calibration_note = (
+            f"已补入 {len(merged_source_facts)} 条外部公开线索，以下内容同时参考推演内部轨迹与公开来源摘录。"
+        )
+        status = "enriched"
+    else:
+        calibration_note = "本次外部补强不足，以下主体仍以内部推演轨迹为主，未将未核实内容伪装为外部已证实事实。"
+        status = "insufficient"
+
+    return {
+        "queries": queries,
+        "source_facts": merged_source_facts,
+        "source_lines": _format_source_fact_lines(merged_source_facts, limit=8),
+        "query_to_facts": query_to_facts,
+        "matched_topics": matched_topics,
+        "calibration_note": calibration_note,
+        "status": status,
+        "provider_hits": provider_hits,
+    }
 
 
 def _append_node(nodes: List[GraphNode], seen_nodes: Set[str], node_id: str, name: str, node_type: str, **properties) -> None:
@@ -485,6 +924,7 @@ async def list_scenarios() -> dict:
 @router.get("/runs")
 async def list_runs() -> dict:
     """List all simulation runs"""
+    _ensure_run_registry_loaded()
     return {"runs": list(_run_registry.values())}
 
 
@@ -537,6 +977,7 @@ async def create_run(req: SimulationCreateRequest) -> dict:
         **graph_metadata,
     }
     _run_registry[run_id] = run
+    _persist_run_snapshot(run)
 
     return run
 
@@ -544,6 +985,7 @@ async def create_run(req: SimulationCreateRequest) -> dict:
 @router.delete("/runs/{run_id}")
 async def delete_run(run_id: str) -> dict:
     """Delete a simulation run"""
+    _ensure_run_registry_loaded()
     run = _run_registry.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -551,15 +993,19 @@ async def delete_run(run_id: str) -> dict:
     sim_id = run.get("simulation_id")
     if sim_id and run.get("status") == "running":
         run["stop_requested"] = True
+        _persist_run_snapshot(run)
         await _RUNNER.stop(sim_id)
 
     del _run_registry[run_id]
+    if sim_id:
+        _delete_run_snapshot(str(sim_id))
     return {"status": "deleted", "run_id": run_id}
 
 
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str) -> dict:
     """Get a specific simulation run"""
+    _ensure_run_registry_loaded()
     if run_id not in _run_registry:
         raise HTTPException(status_code=404, detail="Run not found")
     return _run_registry[run_id]
@@ -569,6 +1015,7 @@ async def _run_simulation_bg(run_id: str, sim_id: str, req: SimulationCreateRequ
     """Background simulation执行 — 启动 OASIS mock 循环，等待完成后写入 final_states"""
     import asyncio
 
+    _ensure_run_registry_loaded()
     run = _run_registry.get(run_id)
     if not run:
         return
@@ -577,10 +1024,12 @@ async def _run_simulation_bg(run_id: str, sim_id: str, req: SimulationCreateRequ
     run["stop_requested"] = False
     started_at = datetime.now(UTC)
     run["started_at"] = started_at.isoformat()
+    _persist_run_snapshot(run)
 
     try:
         data_dir = _simulation_data_dir()
         sim_dir = os.path.join(data_dir, sim_id)
+        actions_file = os.path.join(sim_dir, "actions.jsonl")
         os.makedirs(sim_dir, exist_ok=True)
 
         # 写入完整配置文件，保持与 create_run 的 run_config 一致
@@ -624,52 +1073,15 @@ async def _run_simulation_bg(run_id: str, sim_id: str, req: SimulationCreateRequ
 
             if run.get("stop_requested"):
                 run["status"] = "paused"
+                _persist_run_snapshot(run)
                 break
 
             run["status"] = status.status
+            _persist_run_snapshot(run)
             if status.status in ("completed", "failed", "paused"):
                 break
 
-        # 仿真结束，加载 final_states（从 actions.jsonl 提取 agent 信息）
-        final_states = []
-        actions_file = os.path.join(sim_dir, "actions.jsonl")
-        if os.path.exists(actions_file):
-            seen_agents: Dict[str, Dict[str, float]] = {}
-            with open(actions_file, encoding='utf-8') as f:
-                for line in f:
-                    if line.strip():
-                        try:
-                            entry = json.loads(line)
-                            agent_id = entry.get("agent_id", "")
-                            if agent_id and agent_id not in seen_agents:
-                                seen_agents[agent_id] = {
-                                    "actions": 0,
-                                    "belief_sum": 0.0,
-                                    "influence_sum": 0.0,
-                                }
-                            if agent_id in seen_agents:
-                                seen_agents[agent_id]["actions"] += 1
-                                # 模拟信念漂移：不同平台/轮次有不同信念
-                                base = hash(agent_id) % 100 / 100
-                                seen_agents[agent_id]["belief_sum"] += 0.3 + base * 0.5
-                                seen_agents[agent_id]["influence_sum"] += 0.2 + (seen_agents[agent_id]["actions"] / 50)
-                        except Exception:
-                            pass
-
-            for aid, s in seen_agents.items():
-                import random as _r
-                belief = min(s["belief_sum"] / max(s["actions"], 1), 0.99)
-                influence = min(s["influence_sum"] / max(s["actions"], 1), 0.99)
-                # 在 [-1, 1] 范围内生成位置
-                px = _r.uniform(-0.9, 0.9)
-                py = _r.uniform(-0.9, 0.9)
-                final_states.append({
-                    "id": aid,
-                    "position": [px, py],
-                    "belief": round(belief, 4),
-                    "influence": round(influence, 4),
-                    "actions": s["actions"],
-                })
+        final_states = _build_final_states_from_actions(actions_file)
 
         run = _run_registry.get(run_id)
         if not run:
@@ -678,6 +1090,7 @@ async def _run_simulation_bg(run_id: str, sim_id: str, req: SimulationCreateRequ
         run["final_states"] = final_states
         run["convergence_achieved"] = run["status"] == "completed"
         run["duration_ms"] = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
+        _persist_run_snapshot(run)
 
     except Exception as e:
         run = _run_registry.get(run_id)
@@ -687,6 +1100,7 @@ async def _run_simulation_bg(run_id: str, sim_id: str, req: SimulationCreateRequ
         if not run.get("stop_requested"):
             run["error"] = str(e)
         run["duration_ms"] = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
+        _persist_run_snapshot(run)
 
 
 # ── Legacy compatibility endpoints ───────────────────────────────────────────
@@ -773,6 +1187,7 @@ async def get_status(simulation_id: str) -> dict:
 @router.get("/runs/{run_id}/detail")
 async def get_run_detail(run_id: str) -> dict:
     """Get detailed simulation run information including actions"""
+    _ensure_run_registry_loaded()
     if run_id not in _run_registry:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -813,6 +1228,7 @@ async def get_run_detail(run_id: str) -> dict:
 @router.post("/runs/{run_id}/start")
 async def start_run(run_id: str) -> dict:
     """Start a created simulation run"""
+    _ensure_run_registry_loaded()
     if run_id not in _run_registry:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -839,14 +1255,16 @@ async def start_run(run_id: str) -> dict:
         enable_reddit=run_config["enable_reddit"] if "enable_reddit" in run_config else True,
     )
     run["stop_requested"] = False
-    _CREATE_TASK(_run_simulation_bg(run_id, run["simulation_id"], req))
     run["status"] = "running"
+    _persist_run_snapshot(run)
+    _CREATE_TASK(_run_simulation_bg(run_id, run["simulation_id"], req))
     return run
 
 
 @router.post("/runs/{run_id}/stop")
 async def stop_run(run_id: str) -> dict:
     """Stop a running simulation run"""
+    _ensure_run_registry_loaded()
     if run_id not in _run_registry:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -856,8 +1274,9 @@ async def stop_run(run_id: str) -> dict:
 
     sim_id = run.get("simulation_id")
     run["stop_requested"] = True
-    await _RUNNER.stop(sim_id)
     run["status"] = "paused"
+    _persist_run_snapshot(run)
+    await _RUNNER.stop(sim_id)
     return run
 
 
@@ -867,6 +1286,7 @@ async def get_run_status(run_id: str) -> dict:
     Get simulation run status — 格式与前端 SimRunStatus 接口对齐。
     返回 twitter/reddit 各自轮次和动作计数，前端 SimulationStreamPanel 轮询此接口。
     """
+    _ensure_run_registry_loaded()
     if run_id not in _run_registry:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1000,6 +1420,7 @@ async def get_run_status(run_id: str) -> dict:
 @router.get("/runs/{run_id}/profiles")
 async def get_run_profiles(run_id: str) -> dict:
     """Get agent profiles for a simulation run"""
+    _ensure_run_registry_loaded()
     if run_id not in _run_registry:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1051,6 +1472,7 @@ async def get_run_actions(
     offset: int = 0,
 ) -> dict:
     """Get paginated action list with filters"""
+    _ensure_run_registry_loaded()
     if run_id not in _run_registry:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1095,6 +1517,7 @@ async def get_run_actions(
 @router.get("/runs/{run_id}/timeline")
 async def get_run_timeline(run_id: str) -> dict:
     """Get round-by-round timeline summary"""
+    _ensure_run_registry_loaded()
     if run_id not in _run_registry:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1155,6 +1578,7 @@ async def get_run_timeline(run_id: str) -> dict:
 @router.get("/runs/{run_id}/agent-stats")
 async def get_run_agent_stats(run_id: str) -> dict:
     """Get per-agent statistics"""
+    _ensure_run_registry_loaded()
     if run_id not in _run_registry:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1221,6 +1645,7 @@ async def get_run_agent_stats(run_id: str) -> dict:
 @router.post("/runs/{run_id}/interview")
 async def interview_agent(run_id: str, req: InterviewRequest) -> dict:
     """Interview a single agent via SimulationRunner (IPC or LLM)"""
+    _ensure_run_registry_loaded()
     if run_id not in _run_registry:
         raise HTTPException(status_code=404, detail="Run not found")
     run = _run_registry[run_id]
@@ -1255,6 +1680,7 @@ async def interview_agent(run_id: str, req: InterviewRequest) -> dict:
 @router.post("/runs/{run_id}/interviews")
 async def batch_interview(run_id: str, req: BatchInterviewRequest) -> dict:
     """Batch interview multiple agents via SimulationRunner"""
+    _ensure_run_registry_loaded()
     if run_id not in _run_registry:
         raise HTTPException(status_code=404, detail="Run not found")
     run = _run_registry[run_id]
@@ -1280,6 +1706,7 @@ async def batch_interview(run_id: str, req: BatchInterviewRequest) -> dict:
 @router.get("/runs/{run_id}/graph")
 async def get_run_graph(run_id: str) -> dict:
     """Get knowledge graph data for a run (nodes + edges)."""
+    _ensure_run_registry_loaded()
     if run_id not in _run_registry:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1703,6 +2130,7 @@ async def get_simulation_report(run_id: str) -> dict:
     Generate and return HTML report for a simulation run.
     Frontend ReportViewer expects { html_content: string }.
     """
+    _ensure_run_registry_loaded()
     if run_id not in _run_registry:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1711,157 +2139,443 @@ async def get_simulation_report(run_id: str) -> dict:
     data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "simulations")
     actions_file = os.path.join(data_dir, sim_id, "actions.jsonl")
 
-    # Collect stats from actions.jsonl
+    # ── Single-pass aggregation ───────────────────────────────────────────────
     tw_count = rd_count = tw_max = rd_max = 0
     action_types: Dict[str, int] = {}
-    agents: List[str] = []
-    seen_agents = set()
-    recent_events: list[str] = []
+    tw_action_types: Dict[str, int] = {}
+    rd_action_types: Dict[str, int] = {}
+    agent_stats: Dict[str, dict] = {}
+    topical_clusters: Dict[str, Dict[str, Any]] = {}
+    mentions: Dict[tuple, int] = {}
+    rounds: Dict[tuple, dict] = {}
+    recent_events: List[str] = []
 
     if os.path.exists(actions_file):
         with open(actions_file, encoding='utf-8') as f:
             for line in f:
-                if line.strip():
-                    try:
-                        a = json.loads(line)
-                        plat = a.get("platform", "twitter")
-                        rnum = a.get("round_num", 0)
-                        at = a.get("action_type", "unknown")
-                        action_types[at] = action_types.get(at, 0) + 1
-                        if plat == "twitter":
-                            tw_count += 1
-                            tw_max = max(tw_max, rnum)
-                        else:
-                            rd_count += 1
-                            rd_max = max(rd_max, rnum)
-                        aid = a.get("agent_id", "")
-                        if aid and aid not in seen_agents:
-                            seen_agents.add(aid)
-                            agents.append(aid)
-                        content = str(a.get("action_args", {}).get("content", ""))[:120]
-                        if content and len(recent_events) < 8:
-                            recent_events.append(content)
-                    except Exception:
-                        pass
+                if not line.strip():
+                    continue
+                try:
+                    a = json.loads(line)
+                    plat = a.get("platform", "twitter")
+                    rnum = int(a.get("round_num", 0))
+                    at = a.get("action_type", "unknown")
+                    aid = a.get("agent_id", "")
+                    args = a.get("action_args", {}) or {}
+                    content = _normalize_text(str(args.get("content") or args.get("text") or ""))
+
+                    action_types[at] = action_types.get(at, 0) + 1
+                    if plat == "twitter":
+                        tw_count += 1
+                        tw_max = max(tw_max, rnum)
+                        tw_action_types[at] = tw_action_types.get(at, 0) + 1
+                    else:
+                        rd_count += 1
+                        rd_max = max(rd_max, rnum)
+                        rd_action_types[at] = rd_action_types.get(at, 0) + 1
+
+                    if aid:
+                        if aid not in agent_stats:
+                            agent_stats[aid] = {
+                                "name": a.get("agent_name", f"Agent_{aid[:6]}"),
+                                "platform": plat,
+                                "total": 0,
+                                "types": {},
+                            }
+                        agent_stats[aid]["total"] += 1
+                        agent_stats[aid]["types"][at] = agent_stats[aid]["types"].get(at, 0) + 1
+
+                    target = str(args.get("target_user", ""))
+                    if aid and target and aid != target:
+                        key = (aid, target)
+                        mentions[key] = mentions.get(key, 0) + 1
+
+                    for topic in _extract_action_topics(a):
+                        cl = topical_clusters.setdefault(topic, {"count": 0, "agents": set(), "platforms": set(), "last_round": 0})
+                        cl["count"] += 1
+                        if aid:
+                            cl["agents"].add(aid)
+                        cl["platforms"].add(plat)
+                        cl["last_round"] = max(int(cl["last_round"]), rnum)
+
+                    rkey = (rnum, plat)
+                    if rkey not in rounds:
+                        rounds[rkey] = {"active_agents": set(), "total": 0, "types": {}, "events": []}
+                    rd = rounds[rkey]
+                    rd["active_agents"].add(aid)
+                    rd["total"] += 1
+                    rd["types"][at] = rd["types"].get(at, 0) + 1
+                    if at in ("post", "tweet") and content and len(rd["events"]) < 2:
+                        rd["events"].append(content[:100])
+
+                    if content and len(recent_events) < 10:
+                        recent_events.append(content[:120])
+                except Exception:
+                    pass
 
     total_actions = tw_count + rd_count
     seed = run.get("scenario", "未来议题")
     status = run.get("status", "unknown")
     final_states = run.get("final_states", [])
+    convergence = bool(run.get("convergence_achieved"))
 
+    # ── Derived aggregates ────────────────────────────────────────────────────
+    agents = list(agent_stats.keys())
+
+    # Top topics
+    top_topics = sorted(topical_clusters.items(), key=lambda x: (-x[1]["count"], -x[1]["last_round"]))[:8]
+
+    # Top interaction pairs
+    top_pairs = sorted(mentions.items(), key=lambda x: -x[1])[:5]
+
+    # Agent risk buckets from final_states
+    belief_map = {fs.get("id", ""): fs.get("belief", 0.5) for fs in final_states}
+    high_risk = [fs for fs in final_states if fs.get("belief", 0) > 0.65]
+    low_risk = [fs for fs in final_states if fs.get("belief", 0) < 0.35]
+
+    # Key agents: top by action count, annotated with belief
+    top_agents = sorted(agent_stats.items(), key=lambda x: -x[1]["total"])[:6]
+
+    # Platform dominant action types
+    tw_dominant = max(tw_action_types, key=tw_action_types.get) if tw_action_types else "—"
+    rd_dominant = max(rd_action_types, key=rd_action_types.get) if rd_action_types else "—"
+
+    # Timeline: last 6 rounds per platform
+    timeline_rows = sorted(rounds.items())[-12:]
+
+    external_calibration = await _build_simulation_external_calibration(
+        seed=seed,
+        seed_content=str(run.get("seed_content") or ""),
+        simulation_requirement=str(run.get("simulation_requirement") or ""),
+        top_topics=top_topics,
+        recent_events=recent_events,
+    )
+    source_facts = external_calibration["source_facts"]
+    source_lines = external_calibration["source_lines"]
+    calibration_queries = external_calibration["queries"]
+    matched_topics = external_calibration["matched_topics"]
+    calibration_note = external_calibration["calibration_note"]
+    calibration_status = external_calibration["status"]
+    provider_hits = external_calibration["provider_hits"]
+
+    # ── HTML helpers ──────────────────────────────────────────────────────────
     safe_run_id = escape(str(run_id))
     safe_status = escape(str(status))
     safe_seed = escape(str(seed))
     safe_generated_at = escape(datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC'))
-    action_rows_html = "".join(
-        f"<tr><td>{escape(str(at))}</td><td>{cnt}</td><td>{cnt * 100 / max(total_actions, 1):.1f}%</td></tr>"
-        for at, cnt in sorted(action_types.items(), key=lambda x: -x[1])
-    )
-    recent_events_html = "".join(
-        f"<div class='event'>📌 {escape(str(ev))}</div>"
-        for ev in recent_events
-    )
+    safe_calibration_note = escape(str(calibration_note))
+    calibration_status_label = "外部情报已补强" if calibration_status == "enriched" else "外部补强不足"
 
-    # Compute high-risk agents
-    high_risk = [fs for fs in final_states if fs.get("belief", 0) > 0.65]
-    low_risk = [fs for fs in final_states if fs.get("belief", 0) < 0.35]
+    status_badge = "badge-done" if status == "completed" else "badge-fail" if status == "failed" else "badge-run"
+    calibration_badge = "badge-done" if calibration_status == "enriched" else "badge-warn"
+
+    def topic_rows_html() -> str:
+        if not top_topics:
+            return "<tr><td colspan='4' style='color:#94a3b8'>暂无话题数据</td></tr>"
+        rows = []
+        for name, cl in top_topics:
+            heat = "🔥" if int(cl["count"]) >= 5 else "📌"
+            plats = "双平台" if len(cl["platforms"]) > 1 else ("Info Plaza" if "twitter" in cl["platforms"] else "Topic Comm.")
+            rows.append(f"<tr><td>{heat} {escape(str(name))}</td><td>{cl['count']}</td><td>{len(cl['agents'])}</td><td>{plats}</td></tr>")
+        return "".join(rows)
+
+    def pairs_rows_html() -> str:
+        if not top_pairs:
+            return "<tr><td colspan='3' style='color:#94a3b8'>暂无互动数据</td></tr>"
+        rows = []
+        for (src, tgt), cnt in top_pairs:
+            src_d = _agent_display(src)
+            tgt_d = _agent_display(tgt)
+            rows.append(f"<tr><td>{escape(src_d['display_name'])}</td><td>→ {escape(tgt_d['display_name'])}</td><td>{cnt} 次</td></tr>")
+        return "".join(rows)
+
+    def agent_rows_html() -> str:
+        if not top_agents:
+            return "<tr><td colspan='5' style='color:#94a3b8'>暂无代理体数据</td></tr>"
+        rows = []
+        for aid, s in top_agents:
+            belief = belief_map.get(aid, 0.5)
+            risk_cls = "high" if belief > 0.65 else ("low" if belief < 0.35 else "")
+            dominant_type = max(s["types"], key=s["types"].get) if s["types"] else "—"
+            plat_label = "Info Plaza" if s["platform"] == "twitter" else "Topic Comm."
+            rows.append(
+                f"<tr><td>{escape(s['name'])}</td><td>{plat_label}</td>"
+                f"<td>{s['total']}</td><td>{escape(dominant_type)}</td>"
+                f"<td class='{risk_cls}'>{belief:.2f}</td></tr>"
+            )
+        return "".join(rows)
+
+    def timeline_html() -> str:
+        if not timeline_rows:
+            return "<p style='color:#94a3b8'>暂无轮次数据</p>"
+        rows = []
+        for (rnum, plat), rd in timeline_rows:
+            plat_label = "Info Plaza" if plat == "twitter" else "Topic Comm."
+            dominant = max(rd["types"], key=rd["types"].get) if rd["types"] else "—"
+            events_str = "；".join(escape(e) for e in rd["events"]) if rd["events"] else "—"
+            rows.append(
+                f"<tr><td>R{rnum}</td><td>{plat_label}</td>"
+                f"<td>{len(rd['active_agents'])}</td><td>{rd['total']}</td>"
+                f"<td>{escape(dominant)}</td><td style='font-size:0.82rem;color:#475569'>{events_str}</td></tr>"
+            )
+        return "".join(rows)
+
+    def action_dist_html() -> str:
+        rows = []
+        for at, cnt in sorted(action_types.items(), key=lambda x: -x[1]):
+            pct = cnt * 100 / max(total_actions, 1)
+            rows.append(f"<tr><td>{escape(str(at))}</td><td>{cnt}</td><td>{pct:.1f}%</td></tr>")
+        return "".join(rows) if rows else "<tr><td colspan='3' style='color:#94a3b8'>暂无数据</td></tr>"
+
+    def observation_points_html() -> str:
+        points = []
+        if not convergence:
+            points.append("系统尚未收敛，未来 24 小时内议题走向仍存在较大不确定性，建议持续追踪高频话题簇的动态变化。")
+        else:
+            points.append("系统已进入相对稳定区间，短期内主要议题走向基本确定，重点关注边缘代理体的立场漂移。")
+        if len(high_risk) > 0:
+            names = "、".join(escape(_agent_display(fs.get("id",""))["display_name"]) for fs in high_risk[:3])
+            points.append(f"高信念代理体（{names}等 {len(high_risk)} 个）在 24-48 小时内可能持续放大议题热度，需重点监控其扩散路径。")
+        if top_topics:
+            hot = [escape(str(n)) for n, cl in top_topics[:3] if int(cl["count"]) >= 3]
+            if hot:
+                points.append(f"话题簇「{'」「'.join(hot)}」当前热度较高，预计在 48-72 小时内仍将是主要讨论焦点。")
+        if source_facts:
+            points.append(f"外部校准已命中 {len(source_facts)} 条公开来源，可优先核对其中与推演热点重合的主题，避免仅凭内部轨迹判断。")
+        if tw_count > 0 and rd_count > 0:
+            ratio = tw_count / max(rd_count, 1)
+            if ratio > 3:
+                points.append("Info Plaza 动作量显著高于 Topic Community，舆论扩散以广播式为主，深度讨论相对不足。")
+            elif ratio < 0.5:
+                points.append("Topic Community 动作量显著高于 Info Plaza，议题正在社区内深度发酵，需关注是否向公共广场溢出。")
+        if not points:
+            points.append("当前数据量有限，建议在推演完成后重新生成报告以获取更完整的观察点。")
+        return "".join(f"<li>{p}</li>" for p in points)
+
+    def calibration_queries_html() -> str:
+        return _html_list([escape(item) for item in calibration_queries], "本次未生成有效外部检索词")
+
+    def matched_topics_html() -> str:
+        return _html_list([escape(item) for item in matched_topics], "暂未找到与推演热点直接重合的公开话题")
+
+    def provider_hits_html() -> str:
+        provider_labels = {
+            "query": "QueryAgent / Tavily",
+            "media": "MediaAgent / Bocha",
+        }
+        items = [
+            f"{provider_labels.get(name, name)}：{count} 条命中"
+            for name, count in provider_hits.items()
+            if count
+        ]
+        return _html_list(items, "本次外部检索未拿到可用命中")
+
+    def source_digest_html() -> str:
+        if not source_lines:
+            return "<li>本次外部补强不足，以下报告主体仍以内部推演轨迹为主。</li>"
+        items = []
+        for line in source_lines:
+            safe_line = escape(line).replace("\n", "<br>")
+            items.append(f"<li>{safe_line}</li>")
+        return "".join(items)
+
+    def source_rows_html() -> str:
+        if not source_facts:
+            return "<tr><td colspan='4' style='color:#94a3b8'>暂无可展示的外部公开线索</td></tr>"
+        rows = []
+        for fact in source_facts:
+            meta_parts = [part for part in [fact.get("source", ""), fact.get("published_at", ""), fact.get("paragraph_title", "")] if part]
+            summary = escape((fact.get("summary") or "")[:220] or "检索已命中该来源，但正文摘要仍在补全。")
+            title = escape(fact.get("title") or "未命名来源")
+            url = (fact.get("url") or "").strip()
+            if url:
+                title_html = f"<a href='{escape(url, quote=True)}' target='_blank' rel='noopener noreferrer'>{title}</a>"
+            else:
+                title_html = title
+            rows.append(
+                "<tr>"
+                f"<td>{title_html}</td>"
+                f"<td>{escape(' · '.join(meta_parts) or '外部来源')}</td>"
+                f"<td>{summary}</td>"
+                f"<td>{escape(fact.get('paragraph_title') or '外部校准')}</td>"
+                "</tr>"
+            )
+        return "".join(rows)
+
 
     # Build HTML report
+    recent_events_html = "".join(f"<div class='event'>📌 {escape(str(ev))}</div>" for ev in recent_events) or "<div class='event'>暂无关键事件摘要</div>"
     html_content = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <style>
   :root {{ color-scheme: light; }}
-  body {{ font-family: 'IBM Plex Sans', -apple-system, sans-serif; max-width: 980px; margin: 28px auto; padding: 0 20px 48px; color: #1a2332; line-height: 1.75; background: #f8fbff; }}
+  body {{ font-family: 'IBM Plex Sans', -apple-system, sans-serif; max-width: 1100px; margin: 28px auto; padding: 0 20px 48px; color: #1a2332; line-height: 1.75; background: #f8fbff; }}
   .shell {{ background: rgba(255,255,255,0.94); border: 1px solid #dbe7f3; border-radius: 24px; overflow: hidden; box-shadow: 0 24px 80px rgba(15, 23, 42, 0.08); }}
   .hero {{ padding: 32px; background: linear-gradient(135deg, rgba(37,99,235,0.12), rgba(14,165,233,0.08), rgba(16,185,129,0.08)); border-bottom: 1px solid #dbe7f3; }}
   h1 {{ color: #102a56; margin: 0 0 10px; font-size: 2rem; letter-spacing: -0.03em; }}
-  h2 {{ color: #163b75; margin-top: 2em; font-size: 1.18rem; letter-spacing: -0.01em; }}
+  h2 {{ color: #163b75; margin-top: 0; font-size: 1.08rem; letter-spacing: -0.01em; }}
   .meta {{ color: #64748b; font-size: 0.85rem; margin-bottom: 1.2em; }}
-  .summary {{ max-width: 760px; font-size: 0.96rem; color: #334155; }}
+  .summary {{ max-width: 820px; font-size: 0.96rem; color: #334155; }}
   .content {{ padding: 28px 32px 36px; }}
   .stats {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 22px 0 10px; }}
   .stat {{ background: linear-gradient(180deg, #ffffff, #f5f9ff); border: 1px solid #e2e8f0; border-radius: 18px; padding: 16px; text-align: center; }}
   .stat-val {{ font-size: 1.85rem; font-weight: 800; color: #2563eb; }}
   .stat-lbl {{ font-size: 0.72rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 6px; }}
+  .grid-2 {{ display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:18px; margin-top:18px; }}
+  .section-card {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 18px; padding: 18px 20px; margin-top: 18px; }}
   .event {{ background: #fff; border: 1px solid #e2e8f0; border-left: 4px solid #2563eb; padding: 10px 14px; margin: 8px 0; border-radius: 14px; font-size: 0.9rem; color: #334155; }}
   .high {{ color: #dc2626; font-weight: 700; }} .low {{ color: #16a34a; font-weight: 700; }}
-  table {{ width: 100%; border-collapse: collapse; margin: 1em 0; overflow: hidden; border-radius: 14px; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 1em 0 0; overflow: hidden; border-radius: 14px; }}
   th {{ background: #f0f6ff; padding: 10px 12px; text-align: left; font-size: 0.8rem; color: #64748b; border-bottom: 1px solid #e2e8f0; }}
-  td {{ padding: 10px 12px; font-size: 0.86rem; border-bottom: 1px solid #f1f5f9; background: #fff; }}
+  td {{ padding: 10px 12px; font-size: 0.86rem; border-bottom: 1px solid #f1f5f9; background: #fff; vertical-align: top; }}
   .badge {{ display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; }}
   .badge-done {{ background: #dcfce7; color: #16a34a; }} .badge-fail {{ background: #fee2e2; color: #dc2626; }}
-  .badge-run {{ background: #dbeafe; color: #2563eb; }}
-  .section-card {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 18px; padding: 18px 20px; margin-top: 18px; }}
+  .badge-run {{ background: #dbeafe; color: #2563eb; }} .badge-warn {{ background: #fef3c7; color: #b45309; }}
   .footer-note {{ margin-top: 30px; border-top: 1px solid #e2e8f0; padding-top: 18px; color: #64748b; font-size: 0.82rem; }}
+  .hint {{ color: #475569; font-size: 0.85rem; margin-top: 0.75rem; }}
+  ul, ol {{ margin: 0.6em 0 0; padding-left: 1.2em; }}
+  li + li {{ margin-top: 8px; }}
+  a {{ color: #2563eb; text-decoration: none; }}
+  a:hover {{ text-decoration: underline; }}
 </style>
 </head>
 <body>
 <div class="shell">
-<div class="hero">
-<div class="meta">
-  记录 ID: <code>{safe_run_id}</code> ·
-  当前状态: <span class="badge {'badge-done' if status == 'completed' else 'badge-fail' if status == 'failed' else 'badge-run'}">{safe_status}</span> ·
-  生成时间: {safe_generated_at}
-</div>
-<h1>未来预测报告：{safe_seed}</h1>
-<div class="summary">
-  这份报告围绕 <strong>{safe_seed}</strong> 汇总未来路径图谱、平台互动轨迹与阶段性判断，
-  用于帮助快速理解“谁在影响局势、信息如何扩散、未来 72 小时可能怎样演化”。
-</div>
-<div class="stats">
-  <div class="stat"><div class="stat-val">{len(agents)}</div><div class="stat-lbl">代理体</div></div>
-  <div class="stat"><div class="stat-val">{total_actions}</div><div class="stat-lbl">总动作</div></div>
-  <div class="stat"><div class="stat-val">{tw_count}</div><div class="stat-lbl">Info Plaza</div></div>
-  <div class="stat"><div class="stat-val">{rd_count}</div><div class="stat-lbl">Topic Comm.</div></div>
-</div>
- </div>
-<div class="content">
-<div class="section-card">
-<h2>执行摘要</h2>
-<p>本轮未来预测围绕议题"<strong>{safe_seed}</strong>"展开，在双平台（Info Plaza / Topic Community）上推进了 <strong>{tw_max}/{rd_max}</strong> 轮，累计出现 <strong>{total_actions}</strong> 个关键动作事件，参与代理体 <strong>{len(agents)}</strong> 个。</p>
-<p>系统{"已形成相对稳定的未来走向" if run.get("convergence_achieved") else "仍处于高速演化阶段"}，其中高风险代理体 {len(high_risk)} 个，低风险代理体 {len(low_risk)} 个。</p>
-</div>
-<div class="section-card">
-<h2>背景</h2>
-<p>OASIS 预测引擎通过多代理体社交网络演化，对议题在双平台上的未来走势进行推演。Info Plaza（类 Twitter）反映公共广场的舆论扩散，Topic Community（类 Reddit）反映社区内的深度讨论。两平台并行运行，代理体跨平台互动并持续影响未来路径。</p>
-</div>
-<div class="section-card">
-<h2>行为分析</h2>
-<p>各类型动作分布：</p>
-<table>
-<tr><th>动作类型</th><th>次数</th><th>占比</th></tr>
-{action_rows_html}
-</table>
-</div>
-<div class="section-card">
-<h2>重点事件</h2>
-{recent_events_html}
-</div>
-<div class="section-card">
-<h2>预测</h2>
-<p>基于当前未来路径结果：</p>
-<ul>
-  <li>高风险代理体（信念值 &gt; 0.65）数量为 <span class="high">{len(high_risk)}</span>，建议重点关注其影响力扩散路径</li>
-  <li>低风险代理体（信念值 &lt; 0.35）数量为 <span class="low">{len(low_risk)}</span>，可能在后续演化中改变立场</li>
-  <li>整体系统{"已进入相对稳定区间" if run.get("convergence_achieved") else "仍处于动态演化中"}，未来趋势相对{"更清晰" if run.get("convergence_achieved") else "仍需持续观察"}</li>
-</ul>
-</div>
-<div class="section-card">
-<h2>建议</h2>
-<ol>
-  <li>持续监控高风险代理体的行动模式，特别是在关键决策节点</li>
-  <li>利用低风险代理体作为意见领袖的潜在候选人进行引导</li>
-  <li>在 Info Plaza 与 Topic Community 之间建立信息桥接，促进理性讨论</li>
-  <li>定期重新运行未来预测，跟踪议题演化最新态势</li>
-</ol>
-</div>
-</div>
-<div class="footer-note">
-  本报告由 OrcaFish 未来预测引擎自动生成 · {total_actions} 个动作事件 · {len(agents)} 个代理体 · {tw_max + rd_max} 轮推演
-</div>
-</div>
+  <div class="hero">
+    <div class="meta">
+      记录 ID: <code>{safe_run_id}</code> ·
+      当前状态: <span class="badge {status_badge}">{safe_status}</span> ·
+      生成时间: {safe_generated_at}
+    </div>
+    <h1>未来预测报告：{safe_seed}</h1>
+    <div class="summary">
+      这份报告围绕 <strong>{safe_seed}</strong> 汇总双平台行动轨迹、热点议题簇、关键互动关系与轮次演化，
+      并补入外部公开情报校准，用于快速判断谁在放大议题、哪些主题正在升温，以及未来 24-72 小时的主要观察点。
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="stat-val">{len(agents)}</div><div class="stat-lbl">代理体</div></div>
+      <div class="stat"><div class="stat-val">{total_actions}</div><div class="stat-lbl">总动作</div></div>
+      <div class="stat"><div class="stat-val">{tw_count}</div><div class="stat-lbl">Info Plaza</div></div>
+      <div class="stat"><div class="stat-val">{rd_count}</div><div class="stat-lbl">Topic Comm.</div></div>
+    </div>
+  </div>
+  <div class="content">
+    <div class="section-card">
+      <h2>执行摘要</h2>
+      <p>本轮推演围绕 <strong>{safe_seed}</strong> 展开，Info Plaza / Topic Community 分别推进至 <strong>{tw_max}</strong> / <strong>{rd_max}</strong> 轮，累计形成 <strong>{total_actions}</strong> 条动作记录，覆盖 <strong>{len(agents)}</strong> 个活跃代理体。</p>
+      <p>系统当前<strong>{'已趋于收敛' if convergence else '仍在持续演化'}</strong>，高信念代理体 <span class="high">{len(high_risk)}</span> 个，低信念代理体 <span class="low">{len(low_risk)}</span> 个。Info Plaza 以 <strong>{escape(str(tw_dominant))}</strong> 为主导动作，Topic Community 以 <strong>{escape(str(rd_dominant))}</strong> 为主导动作。</p>
+    </div>
+
+    <div class="section-card">
+      <h2>外部情报校准</h2>
+      <p><span class="badge {calibration_badge}">{escape(calibration_status_label)}</span> {safe_calibration_note}</p>
+      <div class="grid-2">
+        <div>
+          <h2>本次检索词</h2>
+          <ul>
+            {calibration_queries_html()}
+          </ul>
+        </div>
+        <div>
+          <h2>命中来源统计</h2>
+          <ul>
+            {provider_hits_html()}
+          </ul>
+        </div>
+      </div>
+      <p class="hint">以下外部公开线索仅用于校准推演热点，不替代内部轨迹本身。外部补强不足时，已明确标注而不是伪装成已核实结论。</p>
+    </div>
+
+    <div class="grid-2">
+      <div class="section-card">
+        <h2>热点议题簇</h2>
+        <table>
+          <tr><th>议题</th><th>热度</th><th>参与代理体</th><th>平台</th></tr>
+          {topic_rows_html()}
+        </table>
+      </div>
+      <div class="section-card">
+        <h2>关键互动对</h2>
+        <table>
+          <tr><th>源代理体</th><th>目标代理体</th><th>互动次数</th></tr>
+          {pairs_rows_html()}
+        </table>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="section-card">
+        <h2>平台对比</h2>
+        <ul>
+          <li>Info Plaza 动作量 <strong>{tw_count}</strong>，主导动作 <strong>{escape(str(tw_dominant))}</strong>，最高轮次 <strong>R{tw_max}</strong></li>
+          <li>Topic Community 动作量 <strong>{rd_count}</strong>，主导动作 <strong>{escape(str(rd_dominant))}</strong>，最高轮次 <strong>R{rd_max}</strong></li>
+          <li>双平台动作量比约为 <strong>{(tw_count / max(rd_count, 1)):.2f}</strong> : 1</li>
+        </ul>
+      </div>
+      <div class="section-card">
+        <h2>动作分布</h2>
+        <table>
+          <tr><th>动作类型</th><th>次数</th><th>占比</th></tr>
+          {action_dist_html()}
+        </table>
+      </div>
+    </div>
+
+    <div class="section-card">
+      <h2>与推演热点重合的公开话题</h2>
+      <ul>
+        {matched_topics_html()}
+      </ul>
+    </div>
+
+    <div class="section-card">
+      <h2>最新公开线索摘录</h2>
+      <ul>
+        {source_digest_html()}
+      </ul>
+    </div>
+
+    <div class="section-card">
+      <h2>外部公开来源明细</h2>
+      <table>
+        <tr><th>标题</th><th>来源</th><th>摘要</th><th>对应检索主题</th></tr>
+        {source_rows_html()}
+      </table>
+    </div>
+
+    <div class="section-card">
+      <h2>关键角色</h2>
+      <table>
+        <tr><th>代理体</th><th>平台</th><th>动作量</th><th>主导动作</th><th>最终信念</th></tr>
+        {agent_rows_html()}
+      </table>
+    </div>
+
+    <div class="section-card">
+      <h2>轮次脉络</h2>
+      <table>
+        <tr><th>轮次</th><th>平台</th><th>活跃代理体</th><th>动作量</th><th>主导动作</th><th>关键事件</th></tr>
+        {timeline_html()}
+      </table>
+    </div>
+
+    <div class="section-card">
+      <h2>关键事件摘录</h2>
+      {recent_events_html}
+    </div>
+
+    <div class="section-card">
+      <h2>未来 24-72 小时观察点</h2>
+      <ul>
+        {observation_points_html()}
+      </ul>
+    </div>
+  </div>
+  <div class="footer-note">
+    本报告由 OrcaFish 未来预测引擎自动生成 · {total_actions} 个动作事件 · {len(agents)} 个代理体 · {tw_max + rd_max} 个平台轮次摘要 · 外部校准 {len(source_facts)} 条来源
+  </div>
 </div>
 </body>
 </html>"""

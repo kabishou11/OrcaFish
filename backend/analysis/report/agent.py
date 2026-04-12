@@ -18,6 +18,7 @@ class ReportTask:
     query_report: str = ""
     media_report: str = ""
     insight_report: str = ""
+    source_facts: str = ""
     final_html: str = ""
     error: str = ""
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -45,7 +46,7 @@ class ReportAgent:
     # ------------------------------------------------------------------
 
     ASSEMBLY_PROMPT = """你是一个专业的舆情报告整合专家。
-根据以下三份子报告，整合成一份完整的舆情分析报告。
+根据以下三份子报告与公开来源事实层，整合成一份完整的舆情分析报告。
 
 主题：{query}
 
@@ -58,12 +59,17 @@ class ReportAgent:
 --- 社交媒体洞察（InsightAgent）---
 {insight_report}
 
+--- 公开来源事实层 ---
+{source_facts}
+
 要求：
 1. 综合三个来源的信息，突出重点和关键发现
-2. 使用Markdown格式输出
-3. 结构清晰：摘要、主体分析、结论
-4. 字数3000-5000字
-5. 使用中文撰写"""
+2. 必须保留真实来源信息，明确写出标题、来源、已知时间线索与关键信号
+3. 如果某一路信息不足，要明确说明不足，而不是用空泛套话补齐
+4. 使用Markdown格式输出
+5. 结构清晰：摘要、主体分析、公开来源摘录、结论
+6. 字数2500-4500字
+7. 使用中文撰写"""
 
     # ------------------------------------------------------------------
     # HTML template (dark-mode, modern design)
@@ -291,6 +297,7 @@ class ReportAgent:
         query_report: str = "",
         media_report: str = "",
         insight_report: str = "",
+        source_facts: str = "",
     ) -> str:
         """
         Generate a final HTML report by assembling three sub-reports.
@@ -312,6 +319,7 @@ class ReportAgent:
             query_report=query_report,
             media_report=media_report,
             insight_report=insight_report,
+            source_facts=source_facts,
         )
         self._tasks[task_id] = task
 
@@ -324,6 +332,7 @@ class ReportAgent:
                     query_report=self._truncate(query_report, 3000) if query_report else "（暂无数据）",
                     media_report=self._truncate(media_report, 3000) if media_report else "（暂无数据）",
                     insight_report=self._truncate(insight_report, 3000) if insight_report else "（暂无数据）",
+                    source_facts=self._truncate(source_facts, 4000) if source_facts else "（暂无公开来源摘录）",
                 ),
                 max_tokens=8192,
             )

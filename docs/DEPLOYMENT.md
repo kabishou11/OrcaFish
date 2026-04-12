@@ -15,7 +15,7 @@
 ### 后端
 
 - Windows 10/11 或 Linux / macOS
-- Python 3.11+
+- Python 3.13
 - 建议使用项目内 `.venv`
 
 ### 前端
@@ -43,8 +43,9 @@
 
 ```powershell
 cd F:\1work\OrcFish\orcafish
-python -m venv .venv
+py -3.13 -m venv .venv
 .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
@@ -132,7 +133,7 @@ extra_body={"reasoning_split": True}
 
 - `ZEP_BASE_URL=http://localhost:8000`：Zep CE 主服务
 - `GRAPHITI_BASE_URL=http://localhost:8003`：Graphiti 图谱写入/检索服务
-- `ZEP_API_SECRET`：若本地服务启用了鉴权，需与本地配置保持一致
+- `ZEP_API_SECRET`：若本地服务启用了鉴权，需与本地配置保持一致，建议第一次部署时改成你自己的值
 
 后端配置事实来源见：
 
@@ -146,7 +147,29 @@ extra_body={"reasoning_split": True}
 - 通过 `GET /episodes/{graph_id}` 获取图谱统计信息
 - 如果 Graphiti 不可用，则仿真页仍回退到本地聚合图，不阻塞主链演示
 
-#### 7.1.1 使用你已经跑起来的本地 zep-local
+#### 7.1.1 使用仓库内 `zep-local`
+
+如果你希望新人拿到仓库后直接启动，现在仓库根目录已经提供：
+
+- `zep-local/docker-compose.yml`
+- `zep-local/docker-compose.ce.yaml`
+- `zep-local/.env.example`
+- `zep-local/zep.yaml`
+- `zep-local/README.md`
+
+推荐步骤：
+
+```powershell
+cd F:\1work\OrcFish\orcafish
+Copy-Item zep-local\.env.example zep-local\.env
+cd zep-local
+docker compose up -d
+```
+
+启动前只需要把 `zep-local/.env` 中的 `OPENAI_API_KEY` 改成你自己的值。
+这个 `.env` 是本地私密文件，不要提交到仓库。
+
+#### 7.1.2 使用你已经跑起来的本地 zep-local
 
 如果你本机已经有单独维护的本地 Zep/Graphiti（例如 `F:\3work\1风险预测\zep-local`），最简单的方式不是重复部署，而是直接让 OrcaFish 指向它：
 
@@ -158,7 +181,7 @@ ZEP_API_SECRET=
 
 只要端口和 secret 对得上，就可以直接联调。
 
-#### 7.1.2 使用仓库内自带 compose
+#### 7.1.3 使用仓库内自带 compose
 
 仓库中已有一份可直接参考的本地编排文件：
 
@@ -173,7 +196,7 @@ ZEP_API_SECRET=
 
 如果你要直接使用这份 compose，建议在 `zep/legacy/` 目录补齐相应 `.env` 后再启动。
 
-#### 7.1.3 本地端口核对
+#### 7.1.4 本地端口核对
 
 在 PowerShell 中可先确认端口是否真的在监听：
 
@@ -271,12 +294,12 @@ Invoke-WebRequest http://localhost:8003/healthcheck
 
 ```powershell
 cd F:\1work\OrcFish\orcafish
-.venv\Scripts\python.exe tests\test_backend_smoke.py
+.venv\Scripts\python.exe -m pytest tests\test_backend_smoke.py
 ```
 
 成功标志：
 
-- 输出 `backend-smoke-ok`
+- `12 passed` 或更高
 
 ### 10.3 前端构建检查
 
@@ -338,6 +361,8 @@ pnpm build
 当前版本已经接通了 `Simulation run -> Graphiti/Zep metadata -> 前端图谱接口` 的主闭环，但要准确理解边界：
 
 - `GET /api/simulation/runs/{run_id}/graph` 中的 `project_id`、`graph_id`、`graph_source`、`graph_entity_count`、`graph_relation_count`、`graph_entity_types`、`graph_synced_at` 已来自本地 Graphiti/Zep 同步结果
+- 预测记录当前会在本地持久化，服务重启后可恢复历史 run、状态快照与图谱元数据
+- 仿真报告会补入公开来源摘录，避免只依赖内部推演轨迹判断热点变化
 - 前端页面当前主要消费 `nodes/edges`，而这部分仍保留本地聚合生成与降级回退
 - 因此现在可以说“本地 Zep / Graphiti 已接上并可演示”，但还不应表述成“所有图结构都完全由远端图数据库直出”
 
