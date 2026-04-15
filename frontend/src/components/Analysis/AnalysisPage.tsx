@@ -691,6 +691,14 @@ export default function AnalysisPage() {
       max_rounds: 48,
       source: 'analysis',
       source_task_id: result?.task_id,
+      graph_context: {
+        graph_id: result?.graph_id ?? undefined,
+        graph_source_mode: result?.graph_source_mode ?? undefined,
+        graph_queries: result?.graph_queries ?? [],
+        graph_facts: result?.graph_facts ?? [],
+        graph_edges: result?.graph_edges ?? [],
+        graph_nodes: result?.graph_nodes ?? [],
+      },
       country_context: activeCountryContext ?? undefined,
     })
     navigate('/simulation')

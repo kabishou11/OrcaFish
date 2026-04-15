@@ -27,6 +27,12 @@ export interface AnalysisResult {
     published_at: string
     signal_type: string
   }>
+  graph_id?: string | null
+  graph_source_mode?: string | null
+  graph_queries?: string[]
+  graph_facts?: string[]
+  graph_edges?: Array<Record<string, unknown>>
+  graph_nodes?: Array<Record<string, unknown>>
   agent_status?: Record<string, string>
   agent_metrics?: Record<string, {
     key: string

@@ -10,6 +10,8 @@ interface SimulationRun {
   run_id: string; status: string; rounds_completed: number; convergence_achieved: boolean;
   final_states?: Array<{ id: string; position: [number, number]; belief: number; influence: number }>;
   duration_ms?: number; created_at?: string; started_at?: string | null; max_rounds?: number;
+  country_context?: CountryContextDraftSummary | null;
+  graph_context?: DraftGraphContextSummary | null;
 }
 
 // ── KG types for local state ─────────────────────────────────────────────────
@@ -25,12 +27,38 @@ interface SimRunStatus {
 interface GraphPayload {
   nodes: KGNode[]
   edges: KGLink[]
+  graph_source_mode?: string
+  graph_entity_types?: string[]
+  graph_synced_at?: string | null
 }
 
-function normalizeGraphPayload(data?: { nodes?: KGNode[]; edges?: KGLink[] } | null): GraphPayload {
+interface DraftGraphContextSummary {
+  graph_id?: string
+  graph_source_mode?: string
+  graph_queries?: string[]
+  graph_facts?: string[]
+  graph_edges?: Array<{
+    source?: string
+    target?: string
+    type?: string
+    fact?: string
+    weight?: number
+  }>
+  graph_nodes?: Array<{
+    id?: string
+    name?: string
+    type?: string
+    summary?: string
+  }>
+}
+
+function normalizeGraphPayload(data?: { nodes?: KGNode[]; edges?: KGLink[]; graph_source_mode?: string; graph_entity_types?: string[]; graph_synced_at?: string | null } | null): GraphPayload {
   return {
     nodes: Array.isArray(data?.nodes) ? data.nodes : [],
     edges: Array.isArray(data?.edges) ? data.edges : [],
+    graph_source_mode: typeof data?.graph_source_mode === 'string' ? data.graph_source_mode : undefined,
+    graph_entity_types: Array.isArray(data?.graph_entity_types) ? data.graph_entity_types : undefined,
+    graph_synced_at: typeof data?.graph_synced_at === 'string' ? data.graph_synced_at : null,
   }
 }
 
@@ -651,6 +679,10 @@ type SimulationDraftWithCountryContext = SimulationDraft & {
   summary?: CountryContextDraftSummary
   country?: CountryContextDraftSummary
   source_country?: CountryContextDraftSummary
+  graph_context?: DraftGraphContextSummary
+  graphContext?: DraftGraphContextSummary
+  graph_summary?: DraftGraphContextSummary
+  source_graph?: DraftGraphContextSummary
 }
 
 const RUNS_COLLAPSED_LIMIT = 6
@@ -677,17 +709,34 @@ export default function SimulationPage() {
   const [graphData, setGraphData] = useState<GraphPayload | null>(null)
   const [graphLoading, setGraphLoading] = useState(false)
   const [graphRefreshKey, setGraphRefreshKey] = useState(0)
+  const [graphFocusRequest, setGraphFocusRequest] = useState<{
+    kind: 'node' | 'edge'
+    nodeId?: string
+    edgeId?: string
+    requestId: number
+  } | null>(null)
+  const [persistedCountryContext, setPersistedCountryContext] = useState<CountryContextDraftSummary | null>(null)
+  const [persistedGraphContext, setPersistedGraphContext] = useState<DraftGraphContextSummary | null>(null)
   const graphSignatureRef = useRef('')
   const lastGraphRunIdRef = useRef<string | null>(null)
   const lastGraphRefreshKeyRef = useRef(0)
   const draftPayload = draft as SimulationDraftWithCountryContext | null
-  const draftCountryContext =
+  const incomingCountryContext =
     draftPayload?.country_context ??
     draftPayload?.countryContext ??
     draftPayload?.context ??
     draftPayload?.summary ??
     draftPayload?.country ??
     draftPayload?.source_country
+  const incomingGraphContext =
+    draftPayload?.graph_context ??
+    draftPayload?.graphContext ??
+    draftPayload?.graph_summary ??
+    draftPayload?.source_graph
+  const runCountryContext = (selectedRun?.country_context as CountryContextDraftSummary | null | undefined) ?? null
+  const runGraphContext = (selectedRun?.graph_context as DraftGraphContextSummary | null | undefined) ?? null
+  const draftCountryContext = incomingCountryContext ?? persistedCountryContext ?? runCountryContext
+  const draftGraphContext = incomingGraphContext ?? persistedGraphContext ?? runGraphContext
 
   const hasCountryContext = Boolean(draftCountryContext?.iso)
   const draftCountryName = draftCountryContext?.country_name || draftCountryContext?.name || draftCountryContext?.iso
@@ -707,6 +756,23 @@ export default function SimulationPage() {
       max_rounds: draft.max_rounds || prev.max_rounds,
     }))
   }, [draft])
+
+  useEffect(() => {
+    if (incomingCountryContext?.iso) {
+      setPersistedCountryContext(incomingCountryContext)
+    }
+  }, [incomingCountryContext])
+
+  useEffect(() => {
+    if (incomingGraphContext && (
+      incomingGraphContext.graph_id
+      || incomingGraphContext.graph_facts?.length
+      || incomingGraphContext.graph_edges?.length
+      || incomingGraphContext.graph_nodes?.length
+    )) {
+      setPersistedGraphContext(incomingGraphContext)
+    }
+  }, [incomingGraphContext])
 
   // Fetch graph data when selected run changes or prediction meaningfully advances
   useEffect(() => {
@@ -914,6 +980,8 @@ export default function SimulationPage() {
           seed_content: config.seed_content,
           simulation_requirement: config.simulation_requirement || `分析并预测以下议题的演化趋势：${config.seed_content}`,
           max_rounds: config.max_rounds,
+          country_context: draftCountryContext ?? undefined,
+          graph_context: draftGraphContext ?? undefined,
         }),
       })
       if (!res.ok) throw new Error('创建失败')
@@ -988,6 +1056,55 @@ export default function SimulationPage() {
   const progress = selectedRun?.status === 'running' && selectedRun?.rounds_completed
     ? Math.min((selectedRun.rounds_completed / totalRounds) * 100, 100)
     : selectedRun?.status === 'completed' ? 100 : 0
+  const topGraphRelations = useMemo(() => {
+    const edges = graphData?.edges ?? []
+    return edges
+      .map((edge) => ({
+        id: [
+          String((edge as unknown as Record<string, unknown>).source_node_uuid ?? edge.source ?? ''),
+          String((edge as unknown as Record<string, unknown>).target_node_uuid ?? edge.target ?? ''),
+          String(edge.type ?? edge.name ?? ''),
+          String((edge as unknown as Record<string, unknown>).fact ?? ''),
+        ].join('|'),
+        source: String((edge as unknown as Record<string, unknown>).source_name ?? edge.source ?? '未知节点'),
+        target: String((edge as unknown as Record<string, unknown>).target_name ?? edge.target ?? '未知节点'),
+        relation: String(edge.name || edge.type || '关联'),
+        fact: String((edge as unknown as Record<string, unknown>).fact ?? ''),
+        weight: Number(edge.weight ?? 0),
+        sourceId: String((edge as unknown as Record<string, unknown>).source_node_uuid ?? edge.source ?? ''),
+        targetId: String((edge as unknown as Record<string, unknown>).target_node_uuid ?? edge.target ?? ''),
+      }))
+      .sort((a, b) => b.weight - a.weight || a.relation.localeCompare(b.relation))
+      .slice(0, 5)
+  }, [graphData])
+  const topGraphNodes = useMemo(() => {
+    const nodes = graphData?.nodes ?? []
+    return nodes
+      .map((node) => {
+        const props = (node.properties ?? {}) as Record<string, unknown>
+        const summary = String(props.summary ?? props.content_preview ?? props.role ?? '')
+        return {
+          id: node.id,
+          name: node.name,
+          type: node.type,
+          summary,
+        }
+      })
+      .filter((node) => ['Actor', 'Region', 'Concept', 'Episode', 'Platform'].includes(node.type))
+      .slice(0, 6)
+  }, [graphData])
+  const graphCalibrationSummary = useMemo(() => {
+    if (!draftGraphContext) return null
+    return {
+      sourceMode: draftGraphContext.graph_source_mode || 'waiting',
+      queryCount: draftGraphContext.graph_queries?.length ?? 0,
+      factCount: draftGraphContext.graph_facts?.length ?? 0,
+      edgeCount: draftGraphContext.graph_edges?.length ?? 0,
+      nodeCount: draftGraphContext.graph_nodes?.length ?? 0,
+      topFacts: (draftGraphContext.graph_facts ?? []).slice(0, 3),
+      topQueries: (draftGraphContext.graph_queries ?? []).slice(0, 4),
+    }
+  }, [draftGraphContext])
   const estimateRemaining = () => {
     if (!selectedRun) return '等待创建预测记录'
     if (selectedRun.status === 'completed' && selectedRun.duration_ms) {
@@ -1648,6 +1765,8 @@ export default function SimulationPage() {
                   isSimulating={selectedRun.status === 'running'}
                   onToggleMaximize={() => setViewMode(viewMode === 'graph' ? 'split' : 'graph')}
                   isFullscreen={viewMode === 'graph'}
+                  focusRequest={graphFocusRequest}
+                  onFocusHandled={() => setGraphFocusRequest(null)}
                 />
               ) : (
                 <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 'var(--sp-4)' }}>
@@ -1717,6 +1836,9 @@ export default function SimulationPage() {
                 <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
                   状态 {selectedRun ? getRunStatusLabel(selectedRun.status) : '未选择'}
                 </span>
+                <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.06)', border: '1px solid rgba(124,58,237,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                  图谱 {graphData?.graph_source_mode || '等待校准'}
+                </span>
               </div>
               <div style={{ marginTop: 10, fontSize: '0.7rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
                 建议先处理当前记录与平台态势，再回到图谱主视图核对证据、关系与动作路径。
@@ -1745,6 +1867,62 @@ export default function SimulationPage() {
               analysisLabel="查看预测来源"
             />
           )}
+
+          {graphCalibrationSummary ? (
+            <div className="panel">
+              <div className="panel-header">
+                <span className="panel-title">研判图谱校准</span>
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                  {graphCalibrationSummary.sourceMode}
+                </span>
+              </div>
+              <div className="panel-body" style={{ display: 'grid', gap: 'var(--sp-3)' }}>
+                <div style={{
+                  padding: '12px 14px',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px solid rgba(124,58,237,0.16)',
+                  background: 'linear-gradient(135deg, rgba(124,58,237,0.08), rgba(255,255,255,0.96))',
+                  fontSize: '0.74rem',
+                  color: 'var(--text-secondary)',
+                  lineHeight: 1.7,
+                }}>
+                  这部分来自议题研判阶段的图谱校准结果。你可以把它当作未来预测的结构化起点，用来对照右侧摘要和主图谱里的后续路径演化。
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.06)', border: '1px solid rgba(124,58,237,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                    检索词 {graphCalibrationSummary.queryCount}
+                  </span>
+                  <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                    事实 {graphCalibrationSummary.factCount}
+                  </span>
+                  <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                    关系 {graphCalibrationSummary.edgeCount}
+                  </span>
+                  <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                    节点 {graphCalibrationSummary.nodeCount}
+                  </span>
+                </div>
+                {graphCalibrationSummary.topQueries.length ? (
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                    检索词：{graphCalibrationSummary.topQueries.join('、')}
+                  </div>
+                ) : null}
+                {graphCalibrationSummary.topFacts.length ? (
+                  <div style={{ display: 'grid', gap: 'var(--sp-2)' }}>
+                    {graphCalibrationSummary.topFacts.map((fact, index) => (
+                      <div key={`${fact}-${index}`} style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'rgba(255,255,255,0.92)', fontSize: '0.74rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                        {fact}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                    当前还没有继承到图谱校准事实，后续将继续以未来预测图谱补足。
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
 
           {selectedRun ? (
             <div style={{
@@ -1783,6 +1961,91 @@ export default function SimulationPage() {
                 <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
                   状态 {getRunStatusLabel(selectedRun.status)}
                 </span>
+                <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.06)', border: '1px solid rgba(124,58,237,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                  图谱 {graphData?.graph_source_mode || '等待校准'}
+                </span>
+              </div>
+              {graphData?.graph_entity_types?.length ? (
+                <div style={{ marginTop: 10, fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                  当前图谱类型：{graphData.graph_entity_types.slice(0, 6).join('、')}
+                  {graphData.graph_entity_types.length > 6 ? ` 等 ${graphData.graph_entity_types.length} 类` : ''}
+                </div>
+              ) : null}
+              {graphData?.graph_synced_at ? (
+                <div style={{ marginTop: 6, fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                  最近图谱同步：{new Date(graphData.graph_synced_at).toLocaleString('zh-CN', { hour12: false })}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {selectedRun && (topGraphRelations.length > 0 || topGraphNodes.length > 0) ? (
+            <div className="panel">
+              <div className="panel-header">
+                <span className="panel-title">图谱摘要</span>
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                  {graphData?.graph_source_mode || 'graph'}
+                </span>
+              </div>
+              <div className="panel-body" style={{ display: 'grid', gap: 'var(--sp-3)' }}>
+                <div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 8 }}>
+                    关键关系
+                  </div>
+                  <div style={{ display: 'grid', gap: 'var(--sp-2)' }}>
+                    {topGraphRelations.length ? topGraphRelations.map((edge) => (
+                      <button
+                        key={edge.id}
+                        type="button"
+                        onClick={() => {
+                          setViewMode('split')
+                          setGraphFocusRequest({ kind: 'edge', edgeId: edge.id, requestId: Date.now() })
+                        }}
+                        style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'rgba(255,255,255,0.92)', textAlign: 'left', cursor: 'pointer' }}
+                      >
+                        <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '0.76rem', marginBottom: 4 }}>
+                          {edge.source} → {edge.target}
+                        </div>
+                        <div style={{ color: '#7c3aed', fontSize: '0.68rem', marginBottom: 4 }}>{edge.relation}</div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                          {edge.fact || '当前已命中这条结构关系，建议在图谱主视图里继续核对其上下游路径。'}
+                        </div>
+                        <div style={{ marginTop: 8, fontSize: '0.66rem', color: 'var(--accent)' }}>点击后在主图谱中定位这条关系</div>
+                      </button>
+                    )) : (
+                      <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>等待图谱关系进一步生成。</div>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 8 }}>
+                    关键节点
+                  </div>
+                  <div style={{ display: 'grid', gap: 'var(--sp-2)' }}>
+                    {topGraphNodes.length ? topGraphNodes.map((node) => (
+                      <button
+                        key={node.id}
+                        type="button"
+                        onClick={() => {
+                          setViewMode('split')
+                          setGraphFocusRequest({ kind: 'node', nodeId: node.id, requestId: Date.now() })
+                        }}
+                        style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'rgba(255,255,255,0.92)', textAlign: 'left', cursor: 'pointer' }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                          <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '0.76rem' }}>{node.name}</div>
+                          <div style={{ fontSize: '0.66rem', color: '#16a34a' }}>{node.type}</div>
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                          {node.summary || '该节点已经出现在当前未来路径里，建议在图谱主视图中继续观察它和其他关系的连接。'}
+                        </div>
+                        <div style={{ marginTop: 8, fontSize: '0.66rem', color: 'var(--accent)' }}>点击后在主图谱中定位该节点</div>
+                      </button>
+                    )) : (
+                      <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>等待关键节点摘要生成。</div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           ) : null}

@@ -3,7 +3,7 @@ from __future__ import annotations
 """OrcaFish Simulation Models"""
 from pydantic import BaseModel, Field
 from datetime import UTC, datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class Project(BaseModel):
@@ -59,6 +59,8 @@ class SimulationCreateRequest(BaseModel):
     max_rounds: int = 40
     enable_twitter: bool = True
     enable_reddit: bool = True
+    country_context: Optional[Dict[str, Any]] = None
+    graph_context: Optional[Dict[str, Any]] = None
 
 
 class VariableInjection(BaseModel):

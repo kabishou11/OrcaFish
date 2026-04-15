@@ -271,12 +271,13 @@ CRAWL4AI_TOKEN=
 
 - `zep-local/`
 
-适合第一次部署的人直接照着跑，不用再去翻外部仓库结构。
+这也是当前后端默认会尝试拉起的本地 compose 路径：当 `ZEP_BASE_URL` 保持默认 `http://localhost:8000` 且 Docker 可用时，`backend/main.py` 会优先使用 `zep-local/docker-compose.yml`。
 
-启动前只需要做两件事：
+第一次部署建议直接按下面 3 步走，这样新人拿到仓库也能完整复刻：
 
 1. 复制模板：`Copy-Item zep-local/.env.example zep-local/.env`
 2. 把 `zep-local/.env` 里的 `OPENAI_API_KEY` 改成你自己的兼容模型 Key
+3. 把 `zep-local/zep.yaml` 里的 `api_secret` 改成你自己的本地 secret，并把项目根目录 `.env` 里的 `ZEP_API_SECRET` 改成同一个值
 
 然后进入目录启动：
 
@@ -297,7 +298,7 @@ docker compose up -d
 
 - `zep-local/.env` 是本地私密文件，不要提交进仓库
 - `zep-local/zep.yaml` 当前是示例配置，第一次部署时请把 `api_secret` 换成你自己的本地 secret
-- 记得把项目根目录 `.env` 里的 `ZEP_API_SECRET` 改成同一个值
+- 如果你保留 `ZEP_BASE_URL=http://localhost:8000`，后端启动时会优先复用这套 `zep-local` 服务；若服务未启动且 Docker 可用，会尝试自动执行同一份 compose
 
 ### 8.2 方案 B：直接复用你现成的 `zep-local`
 

@@ -6,6 +6,7 @@ import json
 import subprocess
 import uuid
 import random
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
@@ -13,6 +14,97 @@ from backend.simulation.config import sim_config
 from backend.simulation.ipc import SimulationIPC
 
 _CREATE_TASK = asyncio.create_task
+
+SCENARIO_STOPWORDS = {
+    "当前", "局势", "情况", "发展", "相关", "影响", "未来", "预测", "推演", "研判",
+    "风险", "事件", "行动", "平台", "工作台", "报告", "内容", "趋势", "变化", "小时",
+    "小时内", "内的", "以及", "结合", "以下", "请基于", "构建", "关键", "参与方", "关系图谱",
+}
+
+TWITTER_ROLE_LIBRARY = [
+    ("信息广场角色 1", "外交追踪员", "审慎观察"),
+    ("信息广场角色 2", "政策解读员", "快速放大"),
+    ("信息广场角色 3", "风险预警员", "偏谨慎"),
+    ("信息广场角色 4", "地区记者", "现场更新"),
+    ("信息广场角色 5", "市场观察员", "关注波动"),
+    ("信息广场角色 6", "军事动态观察员", "持续升温"),
+    ("信息广场角色 7", "舆情追踪员", "情绪放大"),
+    ("信息广场角色 8", "国际评论员", "平衡分析"),
+]
+
+REDDIT_ROLE_LIBRARY = [
+    ("话题社区角色 1", "版主", "维持讨论"),
+    ("话题社区角色 2", "深度评论者", "长文分析"),
+    ("话题社区角色 3", "消息搬运者", "快速转述"),
+    ("话题社区角色 4", "怀疑派用户", "质疑论证"),
+    ("话题社区角色 5", "地区观察者", "补充背景"),
+    ("话题社区角色 6", "风险爱好者", "聚焦最坏路径"),
+]
+
+
+def _extract_scenario_terms(seed_topic: str, requirement: str) -> List[str]:
+    text = f"{seed_topic}\n{requirement}".strip()
+    chinese_terms = re.findall(r"[\u4e00-\u9fff]{2,8}", text)
+    english_terms = re.findall(r"\b[A-Za-z][A-Za-z0-9\-]{2,20}\b", text)
+    ordered: List[str] = []
+    for term in chinese_terms + english_terms:
+        cleaned = term.strip()
+        if not cleaned or cleaned in SCENARIO_STOPWORDS:
+            continue
+        if cleaned not in ordered:
+            ordered.append(cleaned)
+    fallback_terms = ["地区安全", "外交斡旋", "军事动态", "舆论走向", "供应链风险", "政策回应"]
+    return (ordered[:8] or fallback_terms)[:8]
+
+
+def _build_agent_profiles(enable_twitter: bool, enable_reddit: bool) -> Dict[str, Dict[str, str]]:
+    profiles: Dict[str, Dict[str, str]] = {}
+    if enable_twitter:
+        for index, (display_name, role, stance) in enumerate(TWITTER_ROLE_LIBRARY):
+            profiles[f"agent_tw_{index}"] = {
+                "display_name": display_name,
+                "role": role,
+                "stance": stance,
+                "platform": "twitter",
+            }
+    if enable_reddit:
+        for index, (display_name, role, stance) in enumerate(REDDIT_ROLE_LIBRARY):
+            profiles[f"agent_rd_{index}"] = {
+                "display_name": display_name,
+                "role": role,
+                "stance": stance,
+                "platform": "reddit",
+            }
+    return profiles
+
+
+def _build_action_content(
+    rng: random.Random,
+    profile: Dict[str, str],
+    action_type: str,
+    scenario_terms: List[str],
+    round_num: int,
+) -> str:
+    topic = rng.choice(scenario_terms)
+    supporting = rng.choice(scenario_terms)
+    stance = profile["stance"]
+    role = profile["role"]
+    if action_type in {"CREATE_POST", "REPLY", "COMMENT"}:
+        templates = [
+            f"{role}判断 {topic} 在第{round_num}轮继续发酵，{supporting} 将成为下一阶段的连锁变量。",
+            f"围绕 {topic} 的讨论明显升温，{role} 更关注 {supporting} 对地区稳定的外溢影响。",
+            f"{role}提示：若 {topic} 持续升级，接下来最值得盯的是 {supporting} 的同步变化。",
+        ]
+        return rng.choice(templates)
+    if action_type in {"RETWEET", "REPOST", "SHARE"}:
+        return f"转发并放大：{topic} 的最新动向已牵动 {supporting}，当前立场偏向“{stance}”。"
+    if action_type in {"LIKE_POST", "UPVOTE"}:
+        return f"认同该判断：{topic} 与 {supporting} 的耦合正在增强。"
+    if action_type in {"DOWNVOTE"}:
+        return f"质疑该判断：目前 {topic} 的证据链还不足以支持 {supporting} 必然升级。"
+    if action_type in {"FOLLOW"}:
+        return f"开始持续关注 {topic}，以便追踪 {supporting} 的后续变化。"
+    return f"{role}继续围绕 {topic} 跟踪 {supporting} 的演化。"
 
 
 @dataclass
@@ -79,36 +171,32 @@ class OASISRunner:
         enable_reddit: bool = True,
     ) -> SimulationStatus:
         """
-        Start OASIS simulation — real async mock loop.
+        Start simulation — 基于议题与角色模板生成可轮询的未来路径事件流。
 
-        生成模拟的 Twitter/Reddit 代理动作，写入 actions.jsonl，
-        轮次逐步推进，前端轮询可实时看到进度。
+        当前仍不是外部多智能体真实对战，而是规则驱动的预演引擎：
+        它会结合议题种子、预测要求、平台角色和轮次推进生成更贴题的行动流，
+        写入 actions.jsonl 后由前端实时轮询展示。
         """
         total_rounds = max_rounds
         # Load config for agent profiles
         config_path = os.path.join(sim_dir, "simulation_config.json")
         seed_topic = ""
+        simulation_requirement = ""
         if os.path.exists(config_path):
             with open(config_path, encoding="utf-8") as f:
                 cfg = json.load(f)
                 total_rounds = cfg.get("time_config", {}).get("total_rounds", max_rounds)
                 seed_topic = cfg.get("seed_content", "")
+                simulation_requirement = cfg.get("simulation_requirement", "")
 
-        # 生成模拟代理池（根据平台开关裁剪）
-        twitter_agents = [
-            f"agent_tw_{i}" for i in range(8)
-        ] if enable_twitter else []
-        reddit_agents = [
-            f"agent_rd_{i}" for i in range(6)
-        ] if enable_reddit else []
+        agent_profiles = _build_agent_profiles(enable_twitter, enable_reddit)
+        twitter_agents = [agent_id for agent_id, profile in agent_profiles.items() if profile["platform"] == "twitter"]
+        reddit_agents = [agent_id for agent_id, profile in agent_profiles.items() if profile["platform"] == "reddit"]
 
         action_types_twitter = ["CREATE_POST", "RETWEET", "LIKE_POST", "REPLY", "FOLLOW"]
         action_types_reddit = ["CREATE_POST", "UPVOTE", "DOWNVOTE", "COMMENT", "REPLY"]
-        topics = [
-            seed_topic or "全球局势",
-            "外交斡旋", "经济制裁", "军事动态", "舆论走向",
-            "国际合作", "地区安全", "人道危机",
-        ]
+        scenario_terms = _extract_scenario_terms(seed_topic, simulation_requirement)
+        rng = random.Random(f"{simulation_id}|{seed_topic}|{simulation_requirement}")
 
         actions_path = os.path.join(sim_dir, "actions.jsonl")
         if simulation_id not in OASISRunner._sim_locks:
@@ -116,43 +204,50 @@ class OASISRunner:
         sim_lock = OASISRunner._sim_locks[simulation_id]
 
         async def _mock_simulation_loop():
-            """后台异步仿真循环"""
+            """后台规则预演循环"""
             try:
                 for round_num in range(1, total_rounds + 1):
                     state = self._sim_states.get(simulation_id)
                     if not state or state.get("status") != "running":
                         break
 
-                    # 模拟每轮 3-8 个动作
-                    num_actions = random.randint(3, 8)
+                    num_actions = rng.randint(4, 8)
                     for _ in range(num_actions):
                         state = self._sim_states.get(simulation_id)
                         if not state or state.get("status") != "running":
                             break
 
-                        is_twitter = random.random() > 0.4
+                        is_twitter = rng.random() > 0.4
                         if is_twitter and twitter_agents:
-                            agent_id = random.choice(twitter_agents)
-                            action_type = random.choice(action_types_twitter)
+                            agent_id = rng.choice(twitter_agents)
+                            action_type = rng.choice(action_types_twitter)
                             platform = "twitter"
-                            agent_name = f"@{agent_id.replace('agent_tw_', 'TW')}"
-                            content = f"观点{random.randint(10,99)}：{random.choice(topics)} #{random.choice(topics)}"
+                            profile = agent_profiles[agent_id]
                         elif reddit_agents:
-                            agent_id = random.choice(reddit_agents)
-                            action_type = random.choice(action_types_reddit)
+                            agent_id = rng.choice(reddit_agents)
+                            action_type = rng.choice(action_types_reddit)
                             platform = "reddit"
-                            agent_name = f"u/{agent_id.replace('agent_rd_', 'RD')}"
-                            content = f"讨论帖{random.randint(100,999)}：{random.choice(topics)}"
+                            profile = agent_profiles[agent_id]
                         else:
                             continue
+
+                        topic = rng.choice(scenario_terms)
+                        signal = rng.choice(scenario_terms)
+                        content = _build_action_content(rng, profile, action_type, scenario_terms, round_num)
 
                         action = {
                             "id": f"act_{simulation_id}_{round_num}_{uuid.uuid4().hex[:8]}",
                             "agent_id": agent_id,
-                            "agent_name": agent_name,
+                            "agent_name": profile["display_name"],
                             "action_type": action_type,
                             "platform": platform,
-                            "action_args": {"content": content, "topic": random.choice(topics)},
+                            "action_args": {
+                                "content": content,
+                                "topic": topic,
+                                "signal": signal,
+                                "role": profile["role"],
+                                "stance": profile["stance"],
+                            },
                             "round_num": round_num,
                             "timestamp": datetime.now(UTC).isoformat().replace('+00:00', 'Z'),
                         }
@@ -170,8 +265,7 @@ class OASISRunner:
                             latest_state["current_round"] = round_num
                             latest_state["recent_actions"].append(action)
 
-                    # 模拟网络延迟，每轮间隔 0.3-0.8 秒
-                    await asyncio.sleep(random.uniform(0.3, 0.8))
+                    await asyncio.sleep(rng.uniform(0.3, 0.8))
             except asyncio.CancelledError:
                 async with sim_lock:
                     latest_state = self._sim_states.get(simulation_id)

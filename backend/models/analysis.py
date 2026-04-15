@@ -105,6 +105,12 @@ class AnalysisTask(BaseModel):
     matched_terms: List[str] = Field(default_factory=list)
     sentiment_hint: Dict[str, int] = Field(default_factory=dict)
     news_digest: List[dict] = Field(default_factory=list)
+    graph_id: Optional[str] = None
+    graph_source_mode: Optional[str] = None
+    graph_queries: List[str] = Field(default_factory=list)
+    graph_facts: List[str] = Field(default_factory=list)
+    graph_edges: List[dict] = Field(default_factory=list)
+    graph_nodes: List[dict] = Field(default_factory=list)
     agent_status: Dict[str, str] = Field(default_factory=dict)
     agent_metrics: Dict[str, AnalysisAgentState] = Field(default_factory=dict)
     sections: List[AnalysisSectionState] = Field(default_factory=list)

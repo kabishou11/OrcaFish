@@ -27,8 +27,10 @@ from backend.analysis.agents.media import MediaAgent
 from backend.analysis.agents.query import QueryAgent
 from backend.llm.client import LLMClient
 from backend.config import settings
+from backend.graph import ZepTools
 
 router = APIRouter(prefix="/simulation", tags=["Simulation"])
+_ZEP_TOOLS = ZepTools()
 
 
 def _simulation_data_dir() -> str:
@@ -205,6 +207,8 @@ def _restore_run_from_disk(sim_id: str) -> Optional[dict]:
         "max_rounds": max_rounds,
         "enable_twitter": bool(config.get("enable_twitter", True)),
         "enable_reddit": bool(config.get("enable_reddit", True)),
+        "country_context": persisted_state.get("country_context") or config.get("country_context"),
+        "graph_context": persisted_state.get("graph_context") or config.get("graph_context"),
     }
 
     run = {
@@ -226,6 +230,8 @@ def _restore_run_from_disk(sim_id: str) -> Optional[dict]:
         "duration_ms": duration_ms,
         "seed_content": persisted_state.get("seed_content") or config.get("seed_content", ""),
         "simulation_requirement": persisted_state.get("simulation_requirement") or config.get("simulation_requirement", ""),
+        "country_context": persisted_state.get("country_context") or config.get("country_context"),
+        "graph_context": persisted_state.get("graph_context") or config.get("graph_context"),
         "run_config": run_config,
         "project_id": persisted_state.get("project_id") or config.get("project_id", ""),
         "graph_id": persisted_state.get("graph_id") or config.get("graph_id", ""),
@@ -880,6 +886,7 @@ def _refresh_run_graph_metadata(run: dict) -> Dict[str, Any]:
         "project_id": str(run.get("project_id") or graph_id),
         "graph_id": graph_id,
         "graph_source": str(run.get("graph_source") or "graphiti"),
+        "graph_source_mode": str(run.get("graph_source_mode") or ""),
         "graph_entity_count": int(run.get("graph_entity_count") or 0),
         "graph_relation_count": int(run.get("graph_relation_count") or 0),
         "graph_entity_types": list(current_types) if isinstance(current_types, list) else [],
@@ -892,6 +899,7 @@ def _refresh_run_graph_metadata(run: dict) -> Dict[str, Any]:
         from backend.graph import GraphBuilder as RemoteGraphBuilder
 
         graph_info = RemoteGraphBuilder().get_graph_info(graph_id)
+        graph_data = RemoteGraphBuilder().get_graph_data(graph_id)
         if graph_info.node_count or graph_info.edge_count or graph_info.entity_types:
             metadata["graph_entity_count"] = graph_info.node_count
             metadata["graph_relation_count"] = graph_info.edge_count
@@ -899,10 +907,68 @@ def _refresh_run_graph_metadata(run: dict) -> Dict[str, Any]:
             metadata["graph_synced_at"] = datetime.now(UTC).isoformat()
             metadata["node_count"] = graph_info.node_count
             metadata["edge_count"] = graph_info.edge_count
+            metadata["graph_source_mode"] = str(graph_data.get("source_mode") or "")
     except Exception:
         return metadata
 
     return metadata
+
+
+def _build_graph_fact_calibration(
+    graph_id: str,
+    seed: str,
+    simulation_requirement: str,
+    top_topics: list[tuple[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    if not graph_id:
+        return {"queries": [], "facts": [], "edges": [], "nodes": [], "source_mode": "no_graph"}
+
+    candidates: list[str] = []
+    base_seed = _normalize_text(seed)
+    if base_seed:
+        candidates.append(base_seed)
+    requirement = _normalize_text(simulation_requirement)
+    if requirement:
+        candidates.append(requirement[:48])
+    for topic_name, _ in top_topics[:3]:
+        normalized = _normalize_text(str(topic_name))
+        if normalized:
+            candidates.append(normalized)
+
+    queries: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        if item and item not in seen:
+            seen.add(item)
+            queries.append(item)
+
+    all_facts: list[str] = []
+    all_edges: list[dict[str, Any]] = []
+    all_nodes: list[dict[str, Any]] = []
+    source_mode = "graph_unavailable"
+
+    for query in queries[:4]:
+        result = _ZEP_TOOLS.search_graph(graph_id=graph_id, query=query, limit=4, scope="both")
+        source_mode = result.source_mode or source_mode
+        for fact in result.facts:
+            if fact and fact not in all_facts:
+                all_facts.append(fact)
+        for edge in result.edges:
+            edge_uuid = str(edge.get("uuid") or "")
+            if edge_uuid and not any(str(item.get("uuid") or "") == edge_uuid for item in all_edges):
+                all_edges.append(edge)
+        for node in result.nodes:
+            node_uuid = str(node.get("uuid") or "")
+            if node_uuid and not any(str(item.get("uuid") or "") == node_uuid for item in all_nodes):
+                all_nodes.append(node)
+
+    return {
+        "queries": queries[:4],
+        "facts": all_facts[:8],
+        "edges": all_edges[:6],
+        "nodes": all_nodes[:6],
+        "source_mode": source_mode,
+    }
 
 
 # ── Scenarios ──────────────────────────────────────────────────────────────────
@@ -946,6 +1012,8 @@ async def create_run(req: SimulationCreateRequest) -> dict:
         "max_rounds": req.max_rounds,
         "enable_twitter": req.enable_twitter,
         "enable_reddit": req.enable_reddit,
+        "country_context": req.country_context,
+        "graph_context": req.graph_context,
     }
 
     config_path = os.path.join(sim_dir, "simulation_config.json")
@@ -961,6 +1029,7 @@ async def create_run(req: SimulationCreateRequest) -> dict:
     run = {
         "run_id": run_id,
         "simulation_id": sim_id,
+        "engine_mode": "rule_based_preview",
         "status": "created",
         "stop_requested": False,
         "rounds_completed": 0,
@@ -973,6 +1042,8 @@ async def create_run(req: SimulationCreateRequest) -> dict:
         "duration_ms": None,
         "seed_content": req.seed_content,
         "simulation_requirement": req.simulation_requirement,
+        "country_context": req.country_context,
+        "graph_context": req.graph_context,
         "run_config": run_config,
         **graph_metadata,
     }
@@ -1012,7 +1083,7 @@ async def get_run(run_id: str) -> dict:
 
 
 async def _run_simulation_bg(run_id: str, sim_id: str, req: SimulationCreateRequest):
-    """Background simulation执行 — 启动 OASIS mock 循环，等待完成后写入 final_states"""
+    """后台执行未来预测预演循环，完成后写入 final_states。"""
     import asyncio
 
     _ensure_run_registry_loaded()
@@ -1043,6 +1114,8 @@ async def _run_simulation_bg(run_id: str, sim_id: str, req: SimulationCreateRequ
                 "max_rounds": req.max_rounds,
                 "enable_twitter": req.enable_twitter,
                 "enable_reddit": req.enable_reddit,
+                "country_context": req.country_context,
+                "graph_context": req.graph_context,
                 "project_id": run.get("project_id", ""),
                 "graph_id": run.get("graph_id", ""),
                 "graph_source": run.get("graph_source", "local_only"),
@@ -1253,6 +1326,8 @@ async def start_run(run_id: str) -> dict:
         max_rounds=run_config["max_rounds"] if "max_rounds" in run_config else run.get("max_rounds", settings.simulation_rounds),
         enable_twitter=run_config["enable_twitter"] if "enable_twitter" in run_config else True,
         enable_reddit=run_config["enable_reddit"] if "enable_reddit" in run_config else True,
+        country_context=run_config["country_context"] if "country_context" in run_config else run.get("country_context"),
+        graph_context=run_config["graph_context"] if "graph_context" in run_config else run.get("graph_context"),
     )
     run["stop_requested"] = False
     run["status"] = "running"
@@ -1295,6 +1370,7 @@ async def get_run_status(run_id: str) -> dict:
     if run.get("status") == "created":
         return {
             "simulation_id": sim_id,
+            "engine_mode": run.get("engine_mode", "rule_based_preview"),
             "status": "created",
             "current_round": 0,
             "total_rounds": run.get("max_rounds", settings.simulation_rounds),
@@ -1399,6 +1475,7 @@ async def get_run_status(run_id: str) -> dict:
 
     return {
         "simulation_id": sim_id,
+        "engine_mode": run.get("engine_mode", "rule_based_preview"),
         "status": effective_status,
         "current_round": oasis_status.current_round,
         "total_rounds": total,
@@ -2250,6 +2327,12 @@ async def get_simulation_report(run_id: str) -> dict:
         top_topics=top_topics,
         recent_events=recent_events,
     )
+    graph_calibration = _build_graph_fact_calibration(
+        graph_id=str(run.get("graph_id") or ""),
+        seed=seed,
+        simulation_requirement=str(run.get("simulation_requirement") or ""),
+        top_topics=top_topics,
+    )
     source_facts = external_calibration["source_facts"]
     source_lines = external_calibration["source_lines"]
     calibration_queries = external_calibration["queries"]
@@ -2257,6 +2340,11 @@ async def get_simulation_report(run_id: str) -> dict:
     calibration_note = external_calibration["calibration_note"]
     calibration_status = external_calibration["status"]
     provider_hits = external_calibration["provider_hits"]
+    graph_fact_queries = graph_calibration["queries"]
+    graph_fact_lines = graph_calibration["facts"]
+    graph_fact_edges = graph_calibration["edges"]
+    graph_fact_nodes = graph_calibration["nodes"]
+    graph_fact_source_mode = graph_calibration["source_mode"]
 
     # ── HTML helpers ──────────────────────────────────────────────────────────
     safe_run_id = escape(str(run_id))
@@ -2265,6 +2353,16 @@ async def get_simulation_report(run_id: str) -> dict:
     safe_generated_at = escape(datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC'))
     safe_calibration_note = escape(str(calibration_note))
     calibration_status_label = "外部情报已补强" if calibration_status == "enriched" else "外部补强不足"
+    graph_source_mode_label = {
+        "remote_search": "图谱搜索接口已命中",
+        "local_remote_nodes_edges": "已基于真实节点/关系做图谱检索",
+        "local_remote_nodes_edges+snapshot": "真实节点/关系 + 本地快照补层",
+        "local_episodes": "当前仍主要基于图谱片段检索",
+        "local_episodes+snapshot": "图谱片段 + 本地快照补层",
+        "local_snapshot": "当前仅命中本地快照",
+        "graph_unavailable": "图谱检索暂不可用",
+        "no_graph": "本次记录暂无图谱",
+    }.get(graph_fact_source_mode, graph_fact_source_mode or "图谱检索状态未知")
 
     status_badge = "badge-done" if status == "completed" else "badge-fail" if status == "failed" else "badge-run"
     calibration_badge = "badge-done" if calibration_status == "enriched" else "badge-warn"
@@ -2402,6 +2500,44 @@ async def get_simulation_report(run_id: str) -> dict:
             )
         return "".join(rows)
 
+    def graph_queries_html() -> str:
+        return _html_list([escape(item) for item in graph_fact_queries], "本次未生成图谱检索词")
+
+    def graph_facts_html() -> str:
+        return _html_list([escape(item) for item in graph_fact_lines], "当前图谱还没有返回可用事实，可能仍在回退到片段模式。")
+
+    def graph_edge_rows_html() -> str:
+        if not graph_fact_edges:
+            return "<tr><td colspan='4' style='color:#94a3b8'>暂无命中的关系事实</td></tr>"
+        rows = []
+        for edge in graph_fact_edges:
+            rows.append(
+                "<tr>"
+                f"<td>{escape(str(edge.get('source_node_name') or edge.get('source_node_uuid') or '未知节点'))}</td>"
+                f"<td>{escape(str(edge.get('name') or edge.get('fact_type') or 'related_to'))}</td>"
+                f"<td>{escape(str(edge.get('target_node_name') or edge.get('target_node_uuid') or '未知节点'))}</td>"
+                f"<td>{escape(str(edge.get('fact') or '图谱命中关系'))}</td>"
+                "</tr>"
+            )
+        return "".join(rows)
+
+    def graph_node_rows_html() -> str:
+        if not graph_fact_nodes:
+            return "<tr><td colspan='3' style='color:#94a3b8'>暂无命中的图谱节点</td></tr>"
+        rows = []
+        for node in graph_fact_nodes:
+            labels = node.get("labels") if isinstance(node.get("labels"), list) else []
+            label_text = " / ".join(str(label) for label in labels if str(label) not in {"Entity", "Node"}) or "图谱节点"
+            summary = escape(str(node.get("summary") or "")) or "该节点已命中，但摘要仍在补全。"
+            rows.append(
+                "<tr>"
+                f"<td>{escape(str(node.get('name') or '未命名节点'))}</td>"
+                f"<td>{escape(label_text)}</td>"
+                f"<td>{summary}</td>"
+                "</tr>"
+            )
+        return "".join(rows)
+
 
     # Build HTML report
     recent_events_html = "".join(f"<div class='event'>📌 {escape(str(ev))}</div>" for ev in recent_events) or "<div class='event'>暂无关键事件摘要</div>"
@@ -2486,6 +2622,41 @@ async def get_simulation_report(run_id: str) -> dict:
         </div>
       </div>
       <p class="hint">以下外部公开线索仅用于校准推演热点，不替代内部轨迹本身。外部补强不足时，已明确标注而不是伪装成已核实结论。</p>
+    </div>
+
+    <div class="section-card">
+      <h2>图谱事实校准</h2>
+      <p><span class="badge badge-run">{escape(graph_source_mode_label)}</span> 当前从知识图谱反查与预测热点直接相关的事实、节点和关系，用来判断本次未来路径是否具备结构支撑。</p>
+      <div class="grid-2">
+        <div>
+          <h2>图谱检索词</h2>
+          <ul>
+            {graph_queries_html()}
+          </ul>
+        </div>
+        <div>
+          <h2>命中事实摘录</h2>
+          <ul>
+            {graph_facts_html()}
+          </ul>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div>
+          <h2>命中的关系</h2>
+          <table>
+            <tr><th>源节点</th><th>关系</th><th>目标节点</th><th>事实</th></tr>
+            {graph_edge_rows_html()}
+          </table>
+        </div>
+        <div>
+          <h2>命中的节点</h2>
+          <table>
+            <tr><th>节点</th><th>类型</th><th>摘要</th></tr>
+            {graph_node_rows_html()}
+          </table>
+        </div>
+      </div>
     </div>
 
     <div class="grid-2">

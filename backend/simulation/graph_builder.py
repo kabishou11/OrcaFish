@@ -2,11 +2,10 @@ from __future__ import annotations
 """OrcaFish GraphBuilder - builds Zep knowledge graph from seed documents"""
 
 import uuid
-import os
 from typing import Optional
 from dataclasses import dataclass, field
 from backend.simulation.ontology import OntologyGenerator
-from backend.simulation.config import sim_config
+from backend.config import settings
 from backend.graph.graph_builder import GraphBuilder as ZepGraphBuilder
 
 
@@ -27,9 +26,12 @@ class GraphBuilder:
     """
 
     def __init__(self, zep_api_key: str = ""):
-        self.zep_api_key = zep_api_key or os.getenv("ZEP_API_KEY", "")
+        self.zep_api_key = zep_api_key or settings.zep_api_key
         self.ontology_gen: Optional[OntologyGenerator] = None
-        self.zep_builder = ZepGraphBuilder(base_url=os.getenv("ZEP_BASE_URL", ""))
+        self.zep_builder = ZepGraphBuilder(
+            api_key=self.zep_api_key,
+            base_url=settings.graphiti_base_url or settings.zep_base_url,
+        )
 
     def set_llm(self, llm_client):
         self.ontology_gen = OntologyGenerator(llm_client)

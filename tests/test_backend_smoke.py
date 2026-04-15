@@ -22,6 +22,7 @@ async def _run_smoke() -> None:
     from backend.api.routes.intelligence import get_cii_scores, get_wm_status, get_news, get_country_context, start_wm, stop_wm
     from backend.api.routes.pipeline import list_pipelines
     from backend.api.routes.analysis import trigger_analysis, get_analysis_task, AnalysisRequest
+    from backend.api.routes.graph import search_graph as search_graph_route
     from backend.api.routes.simulation import (
         _run_registry,
         create_run,
@@ -86,15 +87,33 @@ async def _run_smoke() -> None:
                 seed_content="常规种子内容",
                 simulation_requirement="观察主要叙事阵营与升级路径。",
                 max_rounds=3,
+                country_context={
+                    "iso": "IR",
+                    "country_name": "伊朗",
+                    "score": 82.1,
+                    "level": "high",
+                },
+                graph_context={
+                    "graph_id": "analysis-graph-1",
+                    "graph_source_mode": "remote_search",
+                    "graph_queries": ["伊朗 冲突"],
+                    "graph_facts": ["伊朗相关议题正在升温"],
+                },
             )
         )
         assert run["status"] == "created"
+        assert run["country_context"]["iso"] == "IR"
+        assert run["graph_context"]["graph_id"] == "analysis-graph-1"
 
         status = await get_run_status(run["run_id"])
         assert status["status"] == "created"
 
         detail = await get_run_detail(run["run_id"])
         assert isinstance(detail.get("all_actions"), list)
+
+        graph_search = await search_graph_route(run["graph_id"], query="常规 种子 内容", limit=5, scope="both")
+        assert "facts" in graph_search
+        assert "source_mode" in graph_search
 
         report = await get_simulation_report(run["run_id"])
         assert "html_content" in report
@@ -121,6 +140,8 @@ async def _run_smoke() -> None:
         assert captured["max_rounds"] == run["max_rounds"]
         assert captured["enable_twitter"] is True
         assert captured["enable_reddit"] is True
+        assert captured["country_context"]["iso"] == "IR"
+        assert captured["graph_context"]["graph_id"] == "analysis-graph-1"
 
         toggle_run = await create_run(
             SimulationCreateRequest(

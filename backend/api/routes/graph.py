@@ -2,12 +2,13 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
-from backend.graph import OntologyGenerator, GraphBuilder
+from backend.graph import OntologyGenerator, GraphBuilder, ZepTools
 
 router = APIRouter(prefix="/graph", tags=["Graph"])
 
 _ontology_gen = OntologyGenerator()
 _graph_builder = GraphBuilder()
+_graph_tools = ZepTools(_graph_builder)
 
 
 class OntologyRequest(BaseModel):
@@ -62,3 +63,12 @@ async def get_graph(graph_id: str):
         return info.to_dict()
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/{graph_id}/search")
+async def search_graph(graph_id: str, query: str, limit: int = 8, scope: str = "edges"):
+    """Search graph facts/nodes/edges with remote-first fallback."""
+    try:
+        return _graph_tools.search_graph(graph_id=graph_id, query=query, limit=limit, scope=scope).to_dict()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
