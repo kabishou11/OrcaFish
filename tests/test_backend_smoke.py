@@ -119,6 +119,11 @@ async def _run_smoke() -> None:
         assert "html_content" in report
         assert malicious_title not in report["html_content"]
         assert html.escape(malicious_title) in report["html_content"]
+        assert "预测起点上下文" in report["html_content"]
+        assert "国家观察包" in report["html_content"]
+        assert "继承的图谱校准" in report["html_content"]
+        assert "伊朗" in report["html_content"]
+        assert "analysis-graph-1" in report["html_content"]
 
         original_seed = run["seed_content"]
         _run_registry[run["run_id"]]["seed_content"] = "tampered-seed"

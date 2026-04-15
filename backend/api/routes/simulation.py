@@ -2345,6 +2345,8 @@ async def get_simulation_report(run_id: str) -> dict:
     graph_fact_edges = graph_calibration["edges"]
     graph_fact_nodes = graph_calibration["nodes"]
     graph_fact_source_mode = graph_calibration["source_mode"]
+    country_context = run.get("country_context") if isinstance(run.get("country_context"), dict) else {}
+    inherited_graph_context = run.get("graph_context") if isinstance(run.get("graph_context"), dict) else {}
 
     # ── HTML helpers ──────────────────────────────────────────────────────────
     safe_run_id = escape(str(run_id))
@@ -2363,6 +2365,16 @@ async def get_simulation_report(run_id: str) -> dict:
         "graph_unavailable": "图谱检索暂不可用",
         "no_graph": "本次记录暂无图谱",
     }.get(graph_fact_source_mode, graph_fact_source_mode or "图谱检索状态未知")
+    inherited_graph_mode_label = {
+        "remote_search": "来自议题研判图谱搜索",
+        "local_remote_nodes_edges": "来自真实节点/关系校准",
+        "local_remote_nodes_edges+snapshot": "来自真实节点/关系与快照补层",
+        "local_episodes": "来自图谱片段校准",
+        "local_episodes+snapshot": "来自图谱片段与快照补层",
+        "local_snapshot": "来自本地快照校准",
+        "graph_unavailable": "当时未连通图谱服务",
+        "no_graph": "当时尚未生成图谱上下文",
+    }.get(str(inherited_graph_context.get("graph_source_mode") or ""), str(inherited_graph_context.get("graph_source_mode") or "") or "等待继承图谱校准")
 
     status_badge = "badge-done" if status == "completed" else "badge-fail" if status == "failed" else "badge-run"
     calibration_badge = "badge-done" if calibration_status == "enriched" else "badge-warn"
@@ -2538,6 +2550,66 @@ async def get_simulation_report(run_id: str) -> dict:
             )
         return "".join(rows)
 
+    def inherited_country_context_html() -> str:
+        if not country_context:
+            return "<div class='hint'>这条未来预测不是从国家观察包发起的，当前报告没有继承全球观测上下文。</div>"
+        country_name = escape(str(country_context.get("country_name") or country_context.get("name") or country_context.get("iso") or "未命名地区"))
+        iso = escape(str(country_context.get("iso") or "—"))
+        score = country_context.get("score")
+        level = escape(str(country_context.get("level") or "unknown"))
+        latest_activity = escape(str(country_context.get("latest_activity") or "等待新的观测同步"))
+        news_count = int(country_context.get("news_count") or 0)
+        signal_count = int(country_context.get("signal_count") or 0)
+        focal_count = int(country_context.get("focal_count") or 0)
+        narrative = escape(str(country_context.get("narrative") or "这条预测沿着全球观测阶段的国家观察包继续展开。"))
+        top_signal_types = country_context.get("top_signal_types") if isinstance(country_context.get("top_signal_types"), list) else []
+        top_headlines = country_context.get("top_headlines") if isinstance(country_context.get("top_headlines"), list) else []
+        signal_tags = "".join(
+            f"<span class='badge badge-run'>{escape(str(item))}</span>"
+            for item in top_signal_types[:4]
+        )
+        score_badge = f"<span class='badge badge-run'>CII {float(score):.1f}</span>" if isinstance(score, (int, float)) else ""
+        headline_html = (
+            f"<div class='hint' style='margin-top:12px'><strong>观测起点：</strong>{escape(str(top_headlines[0]))}</div>"
+            if top_headlines else ""
+        )
+        return (
+            "<div>"
+            "<h2>国家观察包</h2>"
+            f"<p><span class='badge badge-run'>{country_name} · {iso}</span> "
+            f"<span class='badge badge-warn'>风险等级 {level}</span> "
+            f"{score_badge}</p>"
+            f"<p>{narrative}</p>"
+            f"<p class='hint'>最近活动：{latest_activity} · 新闻 {news_count} 条 · 信号 {signal_count} 条 · 焦点 {focal_count} 条</p>"
+            f"{signal_tags if signal_tags else ''}"
+            f"{headline_html}"
+            "</div>"
+        )
+
+    def inherited_graph_context_html() -> str:
+        if not inherited_graph_context:
+            return "<div class='hint'>当前没有从议题研判阶段继承图谱校准，报告主体将主要依赖当前运行中的图谱事实校准。</div>"
+        queries = inherited_graph_context.get("graph_queries") if isinstance(inherited_graph_context.get("graph_queries"), list) else []
+        facts = inherited_graph_context.get("graph_facts") if isinstance(inherited_graph_context.get("graph_facts"), list) else []
+        edges = inherited_graph_context.get("graph_edges") if isinstance(inherited_graph_context.get("graph_edges"), list) else []
+        nodes = inherited_graph_context.get("graph_nodes") if isinstance(inherited_graph_context.get("graph_nodes"), list) else []
+        graph_id = escape(str(inherited_graph_context.get("graph_id") or "未命名图谱"))
+        query_html = _html_list([escape(str(item)) for item in queries[:5]], "没有继承到检索词")
+        fact_html = _html_list([escape(str(item)) for item in facts[:4]], "没有继承到事实摘录")
+        return (
+            "<div>"
+            "<h2>继承的图谱校准</h2>"
+            f"<p><span class='badge badge-run'>{escape(inherited_graph_mode_label)}</span> "
+            f"<span class='badge badge-warn'>图谱 ID {graph_id}</span></p>"
+            f"<p class='hint'>这部分来自议题研判阶段的结构化校准，用来说明本次未来预测一开始沿着什么节点、关系和事实进入图谱。</p>"
+            f"<p class='hint'>继承了 {len(queries)} 个检索词、{len(facts)} 条事实、{len(edges)} 条关系、{len(nodes)} 个节点。</p>"
+            "<div class='grid-2'>"
+            f"<div><h2>继承检索词</h2><ul>{query_html}</ul></div>"
+            f"<div><h2>继承事实</h2><ul>{fact_html}</ul></div>"
+            "</div>"
+            "</div>"
+        )
+
 
     # Build HTML report
     recent_events_html = "".join(f"<div class='event'>📌 {escape(str(ev))}</div>" for ev in recent_events) or "<div class='event'>暂无关键事件摘要</div>"
@@ -2602,6 +2674,14 @@ async def get_simulation_report(run_id: str) -> dict:
       <h2>执行摘要</h2>
       <p>本轮推演围绕 <strong>{safe_seed}</strong> 展开，Info Plaza / Topic Community 分别推进至 <strong>{tw_max}</strong> / <strong>{rd_max}</strong> 轮，累计形成 <strong>{total_actions}</strong> 条动作记录，覆盖 <strong>{len(agents)}</strong> 个活跃代理体。</p>
       <p>系统当前<strong>{'已趋于收敛' if convergence else '仍在持续演化'}</strong>，高信念代理体 <span class="high">{len(high_risk)}</span> 个，低信念代理体 <span class="low">{len(low_risk)}</span> 个。Info Plaza 以 <strong>{escape(str(tw_dominant))}</strong> 为主导动作，Topic Community 以 <strong>{escape(str(rd_dominant))}</strong> 为主导动作。</p>
+    </div>
+
+    <div class="section-card">
+      <h2>预测起点上下文</h2>
+      <div class="grid-2">
+        {inherited_country_context_html()}
+        {inherited_graph_context_html()}
+      </div>
     </div>
 
     <div class="section-card">

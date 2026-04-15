@@ -352,10 +352,12 @@ function ReportViewer({
   runId,
   onClose,
   countryContext,
+  graphContext,
 }: {
   runId: string
   onClose: () => void
   countryContext?: CountryContextDraftSummary | null
+  graphContext?: DraftGraphContextSummary | null
 }) {
   const [report, setReport] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -433,6 +435,12 @@ function ReportViewer({
     { label: '信号', value: countryContext?.signal_count ?? 0 },
     { label: '焦点', value: countryContext?.focal_count ?? 0 },
   ]
+  const graphMetricItems = [
+    { label: '检索词', value: graphContext?.graph_queries?.length ?? 0 },
+    { label: '事实', value: graphContext?.graph_facts?.length ?? 0 },
+    { label: '关系', value: graphContext?.graph_edges?.length ?? 0 },
+    { label: '节点', value: graphContext?.graph_nodes?.length ?? 0 },
+  ]
 
   return (
     <div className="report-drawer-overlay" onClick={onClose}>
@@ -492,6 +500,34 @@ function ReportViewer({
             </div>
           </div>
         ) : null}
+        {graphContext && (
+          <div style={{
+            padding: '10px 16px',
+            borderBottom: '1px solid var(--border)',
+            background: 'linear-gradient(135deg, rgba(124,58,237,0.06), rgba(255,255,255,0.98))',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}>
+            <div>
+              <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 4 }}>
+                研判图谱起点
+              </div>
+              <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                {graphContext.graph_source_mode || '等待图谱校准'}{graphContext.graph_id ? ` · ${graphContext.graph_id}` : ''}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {graphMetricItems.map((item) => (
+                <span key={item.label} style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.05)', border: '1px solid rgba(124,58,237,0.1)' }}>
+                  {item.label} {item.value}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Body: sidebar + content */}
         <div className="report-drawer-body">
@@ -533,6 +569,38 @@ function ReportViewer({
                 </div>
               </div>
             ) : null}
+            {graphContext && (
+              <div style={{
+                margin: '0 0 var(--sp-3)',
+                padding: '10px 12px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid rgba(124,58,237,0.12)',
+                background: 'linear-gradient(135deg, rgba(124,58,237,0.05), rgba(255,255,255,0.96))',
+                display: 'grid',
+                gap: 8,
+              }}>
+                <div>
+                  <div style={{ fontSize: '0.66rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 4 }}>
+                    图谱校准摘要
+                  </div>
+                  <div style={{ fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                    {graphContext.graph_source_mode || '等待图谱校准'}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {graphMetricItems.map((item) => (
+                    <span key={item.label} style={{ fontSize: '0.62rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.05)', border: '1px solid rgba(124,58,237,0.1)' }}>
+                      {item.label} {item.value}
+                    </span>
+                  ))}
+                </div>
+                {graphContext.graph_queries?.length ? (
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                    检索词：{graphContext.graph_queries.slice(0, 3).join('、')}
+                  </div>
+                ) : null}
+              </div>
+            )}
             {loading ? (
               <div style={{ display: 'flex', justifyContent: 'center', padding: 'var(--sp-6)' }}>
                 <div className="spinner" />
@@ -625,6 +693,46 @@ function ReportViewer({
                     ) : null}
                   </div>
                 ) : null}
+                {graphContext && (
+                  <div style={{
+                    border: '1px solid rgba(124,58,237,0.12)',
+                    borderRadius: 'var(--radius)',
+                    background: 'linear-gradient(135deg, rgba(124,58,237,0.05), rgba(255,255,255,0.98))',
+                    padding: '14px 16px',
+                  }}>
+                    <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.08em', marginBottom: 8 }}>
+                      继承的图谱校准
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                      <div>
+                        <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                          这份报告沿着研判图谱校准继续展开
+                        </div>
+                        <div style={{ marginTop: 4, fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                          继承的图谱检索词、事实、关系和节点会作为未来预测的结构化起点，和报告正文里的图谱事实校准一起对照阅读。
+                        </div>
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textAlign: 'right' }}>
+                        <div>图谱来源</div>
+                        <div style={{ marginTop: 4, color: 'var(--text-primary)', fontWeight: 700 }}>
+                          {graphContext.graph_source_mode || '等待图谱校准'}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {graphMetricItems.map((item) => (
+                        <span key={item.label} style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.05)', border: '1px solid rgba(124,58,237,0.1)' }}>
+                          {item.label} {item.value}
+                        </span>
+                      ))}
+                    </div>
+                    {graphContext.graph_facts?.length ? (
+                      <div style={{ marginTop: 10, fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.75 }}>
+                        <strong style={{ color: 'var(--text-primary)' }}>继承事实：</strong>{graphContext.graph_facts.slice(0, 2).join('；')}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
                 <div
                   className="report-body"
                   dangerouslySetInnerHTML={{ __html: sanitizedReport }}
@@ -2155,7 +2263,7 @@ export default function SimulationPage() {
 
       {/* Report Viewer Drawer */}
       {showReport && selectedRun && (
-        <ReportViewer runId={selectedRun.run_id} onClose={() => setShowReport(false)} countryContext={draftCountryContext} />
+        <ReportViewer runId={selectedRun.run_id} onClose={() => setShowReport(false)} countryContext={draftCountryContext} graphContext={draftGraphContext} />
       )}
     </div>
   )
