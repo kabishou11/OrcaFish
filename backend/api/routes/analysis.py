@@ -44,6 +44,8 @@ _AGENT_LABELS = {
 }
 
 _ANALYSIS_GRAPH_TOOLS = ZepTools()
+_ANALYSIS_LLM_TIMEOUT_SECONDS = 30
+_ANALYSIS_LLM_MAX_RETRIES = 1
 
 
 def _extract_query_terms(query: str) -> list[str]:
@@ -745,6 +747,8 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
         model=settings.query_llm.model,
         provider=settings.query_llm.provider,
         reasoning_split=settings.query_llm.reasoning_split,
+        timeout=min(settings.query_llm.timeout, _ANALYSIS_LLM_TIMEOUT_SECONDS),
+        max_retries=_ANALYSIS_LLM_MAX_RETRIES,
     )
     media_llm = LLMClient(
         api_key=settings.media_llm.api_key,
@@ -752,6 +756,8 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
         model=settings.media_llm.model,
         provider=settings.media_llm.provider,
         reasoning_split=settings.media_llm.reasoning_split,
+        timeout=min(settings.media_llm.timeout, _ANALYSIS_LLM_TIMEOUT_SECONDS),
+        max_retries=_ANALYSIS_LLM_MAX_RETRIES,
     )
     insight_llm = LLMClient(
         api_key=settings.insight_llm.api_key,
@@ -759,6 +765,8 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
         model=settings.insight_llm.model,
         provider=settings.insight_llm.provider,
         reasoning_split=settings.insight_llm.reasoning_split,
+        timeout=min(settings.insight_llm.timeout, _ANALYSIS_LLM_TIMEOUT_SECONDS),
+        max_retries=_ANALYSIS_LLM_MAX_RETRIES,
     )
     report_llm = LLMClient(
         api_key=settings.report_llm.api_key,
@@ -766,6 +774,8 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
         model=settings.report_llm.model,
         provider=settings.report_llm.provider,
         reasoning_split=settings.report_llm.reasoning_split,
+        timeout=min(settings.report_llm.timeout, _ANALYSIS_LLM_TIMEOUT_SECONDS),
+        max_retries=_ANALYSIS_LLM_MAX_RETRIES,
     )
 
     if task:

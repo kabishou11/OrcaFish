@@ -42,10 +42,22 @@ async def _run_smoke() -> None:
         coro.close()
         return None
 
+    async def fake_monitor_agent() -> None:
+        return None
+
+    async def fake_llm_invoke(self, *args, **kwargs) -> str:
+        return "测试环境中的稳定响应。"
+
+    async def fake_llm_invoke_json(self, *args, **kwargs) -> Dict[str, object]:
+        return {"focal_points": []}
+
     with patch("backend.main._is_zep_ce_running", return_value=False), \
         patch("backend.main.crawl4ai_health", return_value={"installed": True, "ready": True}), \
         patch("backend.api.routes.analysis._run_agent_team", fake_agent_team), \
-        patch("backend.api.routes.analysis.asyncio.create_task", side_effect=fake_create_task):
+        patch("backend.api.routes.analysis.asyncio.create_task", side_effect=fake_create_task), \
+        patch("backend.api.routes.intelligence._run_monitor_agent", side_effect=fake_monitor_agent), \
+        patch("backend.llm.client.LLMClient.invoke", new=fake_llm_invoke), \
+        patch("backend.llm.client.LLMClient.invoke_json", new=fake_llm_invoke_json):
         health = await health_check()
         assert health["status"] == "healthy"
 
@@ -55,6 +67,11 @@ async def _run_smoke() -> None:
         try:
             await start_wm()
             country_context = await get_country_context("IR")
+            refreshed_status = await get_wm_status()
+            assert refreshed_status["running"] is True
+            assert refreshed_status["news_count"] >= 1
+            assert refreshed_status["signal_count"] >= 1
+            assert len(refreshed_status["watchlist"]) >= 1
             assert country_context["iso"] == "IR"
             assert "country" in country_context
             assert "monitor" in country_context
