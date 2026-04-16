@@ -572,18 +572,41 @@ export default function AnalysisPage() {
   useEffect(() => {
     if (!result?.task_id || result.task_id.startsWith('pending-') || result.task_id.startsWith('failed-') || result.status === 'completed' || result.status === 'failed' || result.status === 'degraded') return
     let cancelled = false
+    let failedPolls = 0
     const poll = async () => {
       while (!cancelled) {
         await new Promise((resolve) => setTimeout(resolve, 1500))
         try {
           const res = await fetch(`/api/analysis/${result.task_id}`)
-          if (!res.ok) break
+          if (!res.ok) {
+            failedPolls += 1
+            if (failedPolls >= 3) {
+              if (result) {
+                setResult({
+                  ...result,
+                  ui_message: '与议题研判服务的连接暂时中断，正在自动重试，你也可以稍后刷新页面继续查看。',
+                  last_update_at: new Date().toISOString(),
+                })
+              }
+            }
+            continue
+          }
           const data: AnalysisResult = await res.json()
           if (cancelled) break
+          failedPolls = 0
           setResult(data)
           if (data.status === 'completed' || data.status === 'failed' || data.status === 'degraded') break
         } catch {
-          break
+          failedPolls += 1
+          if (failedPolls >= 3) {
+            if (result) {
+              setResult({
+                ...result,
+                ui_message: '研判轮询暂时中断，系统会继续重试并保留当前已到达内容。',
+                last_update_at: new Date().toISOString(),
+              })
+            }
+          }
         }
       }
     }
@@ -705,8 +728,8 @@ export default function AnalysisPage() {
         graph_source_mode: result?.graph_source_mode ?? undefined,
         graph_queries: result?.graph_queries ?? [],
         graph_facts: result?.graph_facts ?? [],
-        analysis_stage: currentStage,
-        analysis_quality: qualityTone.text,
+        analysis_stage: result?.status ?? 'idle',
+        analysis_quality: result?.data_quality ?? 'unknown',
         analysis_summary: result?.ui_message ?? result?.degraded_reason ?? getSectionSummary(result?.final_report ?? result?.query_report ?? ''),
         news_digest: result?.news_digest ?? [],
         selected_digest: defaultDigest,

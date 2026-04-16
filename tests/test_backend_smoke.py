@@ -753,6 +753,87 @@ def test_degraded_analysis_html_keeps_real_source_facts() -> None:
     asyncio.run(_assert_degraded_analysis_html_keeps_real_source_facts())
 
 
+async def _assert_report_render_fallback_marks_analysis_degraded() -> None:
+    from backend.api.routes import analysis as analysis_route
+    from backend.models.analysis import AnalysisTask
+
+    task_id = f"task_report_render_fallback_{uuid.uuid4().hex[:8]}"
+    query = "霍尔木兹海峡风险外溢"
+    task = AnalysisTask(
+        task_id=task_id,
+        query=query,
+        status="running",
+        progress=0,
+        agent_status={"query": "queued", "media": "queued", "insight": "queued", "report": "queued"},
+        agent_metrics=analysis_route._build_initial_agent_metrics(),
+        matched_terms=analysis_route._extract_query_terms(query),
+        sections=analysis_route._build_initial_sections(query, analysis_route._extract_query_terms(query)),
+        timeline=[],
+        ui_message="测试中",
+    )
+    analysis_route._task_registry[task_id] = task
+
+    class FakeLLMClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    async def fast_research(label: str):
+        await asyncio.sleep(0.01)
+        return SimpleNamespace(final_report=f"{label} live report")
+
+    class FakeQueryAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def research(self, query: str):
+            return await fast_research("query")
+
+    class FakeMediaAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def research(self, query: str):
+            return await fast_research("media")
+
+    class FakeInsightAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def research(self, query: str):
+            return await fast_research("insight")
+
+    class FakeReportAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def generate(self, **kwargs):
+            await asyncio.sleep(0.01)
+            return "报告生成遇到问题，当前无法输出完整版面。"
+
+    with patch("backend.llm.client.LLMClient", FakeLLMClient), \
+        patch("backend.analysis.agents.query.QueryAgent", FakeQueryAgent), \
+        patch("backend.analysis.agents.media.MediaAgent", FakeMediaAgent), \
+        patch("backend.analysis.agents.insight.InsightAgent", FakeInsightAgent), \
+        patch("backend.analysis.report.agent.ReportAgent", FakeReportAgent), \
+        patch("backend.api.routes.analysis._build_fallback_news_digest", return_value=[]):
+        await analysis_route._run_agent_team(task_id, query)
+
+    updated_task = analysis_route._task_registry[task_id]
+    try:
+        assert updated_task.status == "degraded"
+        assert updated_task.data_quality == "degraded"
+        assert updated_task.agent_status["report"] == "fallback"
+        assert updated_task.agent_metrics["report"].status == "fallback"
+        assert "降级研判版本" in (updated_task.ui_message or "")
+        assert "报告生成器返回了不可用内容" in (updated_task.degraded_reason or "")
+    finally:
+        analysis_route._task_registry.pop(task_id, None)
+
+
+def test_report_render_fallback_marks_analysis_degraded() -> None:
+    asyncio.run(_assert_report_render_fallback_marks_analysis_degraded())
+
+
 async def _assert_delete_run_stops_runner() -> None:
     from backend.api.routes.simulation import _RUNNER, _run_registry, create_run, delete_run
     from backend.models.simulation import SimulationCreateRequest

@@ -59,7 +59,13 @@ interface RelationInspectorItem {
 }
 
 interface GraphPanelProps {
-  graphData?: { nodes: GraphNode[]; edges: GraphEdge[] }
+  graphData?: {
+    nodes: GraphNode[]
+    edges: GraphEdge[]
+    graph_source_mode?: string
+    graph_entity_types?: string[]
+    graph_synced_at?: string | null
+  }
   loading?: boolean
   onRefresh?: () => void
   isSimulating?: boolean
@@ -237,6 +243,16 @@ function getEdgeColor(edge: GraphEdge): string {
 
 function getNodeTypeLabel(type: string): string {
   return NODE_TYPE_LABELS[type] || type || '实体'
+}
+
+function getGraphSourceModeLabel(sourceMode?: string | null): string {
+  const normalized = String(sourceMode || '').trim().toLowerCase()
+  if (!normalized) return '等待图谱同步'
+  if (normalized.includes('remote_nodes_edges')) return '真实图谱关系'
+  if (normalized.includes('episodes')) return '观察片段映射'
+  if (normalized.includes('snapshot')) return '本地图谱快照'
+  if (normalized.includes('search')) return '图谱检索校准'
+  return sourceMode || '等待图谱同步'
 }
 
 function getNodeRadius(type: string): number {
@@ -485,6 +501,7 @@ export default function GraphPanel({
   const [showEdgeLabels, setShowEdgeLabels] = useState(true)
   const [relationFilter, setRelationFilter] = useState<'all' | string>('all')
   const [focusCurrentPath, setFocusCurrentPath] = useState(false)
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(false)
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const linkLabelRef = useRef<d3.Selection<SVGTextElement, any, SVGGElement, unknown> | null>(null)
@@ -530,6 +547,10 @@ export default function GraphPanel({
 
   useEffect(() => {
     selectedItemRef.current = selectedItem
+  }, [selectedItem])
+
+  useEffect(() => {
+    if (selectedItem) setInspectorCollapsed(false)
   }, [selectedItem])
 
   useEffect(() => {
@@ -1246,7 +1267,62 @@ export default function GraphPanel({
     return groupedSelectedNodeRelations.outgoing.slice(0, 4)
   }, [groupedSelectedNodeRelations.outgoing, selectedItem])
   const inspectorWidth = isFullscreen ? 420 : 360
-  const edgeToggleRight = selectedItem ? inspectorWidth + 32 : 20
+  const effectiveInspectorWidth = selectedItem ? (inspectorCollapsed ? 72 : inspectorWidth) : 0
+  const edgeToggleRight = selectedItem ? effectiveInspectorWidth + 32 : 20
+  const sourceModeLabel = useMemo(
+    () => getGraphSourceModeLabel(graphData?.graph_source_mode),
+    [graphData?.graph_source_mode],
+  )
+  const graphPhaseBadge = useMemo(() => {
+    if (loading) {
+      return {
+        tone: '#2563eb',
+        title: '正在拉取图谱',
+        description: '正在同步最新节点、关系与证据片段，请稍候。',
+      }
+    }
+    if (isSimulating) {
+      return {
+        tone: '#16a34a',
+        title: '未来路径正在展开',
+        description: '骨架关系、行动流和证据片段会继续实时补全。',
+      }
+    }
+    if (graphData?.nodes?.length) {
+      return {
+        tone: '#7c3aed',
+        title: '图谱已同步完成',
+        description: '可以点击关系核对证据，再沿节点回看整条未来路径。',
+      }
+    }
+    return {
+      tone: '#475569',
+      title: '等待图谱生成',
+      description: '先创建并启动未来预测，图谱会按议题、证据、实体和动作逐步成形。',
+    }
+  }, [graphData?.nodes?.length, isSimulating, loading])
+  const graphStats = useMemo(() => {
+    if (!graphData?.nodes?.length) return [] as Array<{ label: string; value: number | string }>
+    return [
+      { label: '节点', value: graphData.nodes.length },
+      { label: '关系', value: graphData.edges.length },
+      { label: '证据', value: graphData.nodes.filter(node => getNodeType(node) === 'Episode').length },
+      { label: '来源', value: sourceModeLabel },
+    ]
+  }, [graphData, sourceModeLabel])
+  const readingSteps = useMemo(() => {
+    const currentType = selectedItem?.type === 'edge'
+      ? 'relationship'
+      : selectedItem?.type === 'node'
+        ? String(selectedItem.data?.type || '')
+        : ''
+    return [
+      { key: 'topic', label: '先看议题/目标', active: currentType === 'Event' || currentType === 'Goal' },
+      { key: 'evidence', label: '再读证据片段', active: currentType === 'Episode' },
+      { key: 'entity', label: '核对实体与平台', active: ['Actor', 'Region', 'Concept', 'Platform'].includes(currentType) },
+      { key: 'path', label: '最后看关系与动作', active: currentType === 'relationship' || currentType === 'Action' || currentType === 'Agent' },
+    ]
+  }, [selectedItem])
   const relationPillStyle: React.CSSProperties = {
     border: '1px solid #dbe7f3',
     background: 'rgba(255,255,255,0.94)',
@@ -1270,6 +1346,39 @@ export default function GraphPanel({
       }}>
         <div style={{ pointerEvents: 'auto' }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>未来关系图谱</div>
+          <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 10px',
+              borderRadius: 999,
+              background: 'rgba(255,255,255,0.92)',
+              border: '1px solid rgba(148,163,184,0.24)',
+              fontSize: 11,
+              color: graphPhaseBadge.tone,
+              fontWeight: 700,
+            }}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: graphPhaseBadge.tone }} />
+              {graphPhaseBadge.title}
+            </span>
+            {graphData?.graph_source_mode ? (
+              <span style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '4px 10px',
+                borderRadius: 999,
+                background: 'rgba(255,255,255,0.88)',
+                border: '1px solid rgba(219,231,243,0.92)',
+                fontSize: 11,
+                color: '#475569',
+                fontWeight: 600,
+              }}>
+                图谱来源 · {sourceModeLabel}
+              </span>
+            ) : null}
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 10, pointerEvents: 'auto' }}>
           {onRefresh && (
@@ -1299,6 +1408,84 @@ export default function GraphPanel({
         )}
       </div>
 
+      {graphData?.nodes?.length ? (
+        <div style={{
+          position: 'absolute',
+          top: 104,
+          left: 20,
+          zIndex: 11,
+          maxWidth: selectedItem ? 'calc(100% - 460px)' : 'calc(100% - 56px)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+          pointerEvents: 'none',
+        }}>
+          <div style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 10,
+            flexWrap: 'wrap',
+            background: 'rgba(255,255,255,0.9)',
+            border: '1px solid rgba(219,231,243,0.92)',
+            boxShadow: '0 8px 24px rgba(15,23,42,0.06)',
+            borderRadius: 16,
+            padding: '10px 12px',
+            pointerEvents: 'auto',
+          }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a' }}>{graphPhaseBadge.title}</div>
+              <div style={{ fontSize: 11, color: '#475569', lineHeight: 1.6 }}>{graphPhaseBadge.description}</div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {graphStats.map((item) => (
+                <div
+                  key={item.label}
+                  style={{
+                    minWidth: item.label === '来源' ? 140 : 72,
+                    borderRadius: 12,
+                    border: '1px solid rgba(219,231,243,0.92)',
+                    background: 'rgba(248,250,252,0.96)',
+                    padding: '8px 10px',
+                  }}
+                >
+                  <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 4, letterSpacing: '0.04em' }}>{item.label}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a' }}>{item.value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 8,
+            flexWrap: 'wrap',
+            background: 'rgba(255,255,255,0.84)',
+            border: '1px solid rgba(219,231,243,0.92)',
+            borderRadius: 14,
+            padding: '8px 10px',
+            pointerEvents: 'auto',
+          }}>
+            <span style={{ fontSize: 10, color: '#94a3b8', letterSpacing: '0.05em', fontWeight: 700 }}>阅读路径</span>
+            {readingSteps.map((step) => (
+              <span
+                key={step.key}
+                style={{
+                  padding: '5px 10px',
+                  borderRadius: 999,
+                  border: `1px solid ${step.active ? 'rgba(37,99,235,0.22)' : 'rgba(219,231,243,0.92)'}`,
+                  background: step.active ? 'rgba(37,99,235,0.08)' : 'rgba(248,250,252,0.96)',
+                  color: step.active ? '#2563eb' : '#475569',
+                  fontSize: 11,
+                  fontWeight: step.active ? 700 : 600,
+                }}
+              >
+                {step.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {/* Simulation building hint */}
       {isSimulating && (
         <div style={buildingHintStyle(false)}>
@@ -1309,20 +1496,44 @@ export default function GraphPanel({
           未来关系图谱实时生成中...
         </div>
       )}
+      {!isSimulating && graphData?.nodes?.length ? (
+        <div style={buildingHintStyle(true)}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="#a855f7" strokeWidth={2} style={{ width: 18, height: 18 }}>
+            <path d="M4 12h16" />
+            <path d="M12 4v16" />
+          </svg>
+          图谱已完成同步，可继续核对关系、证据与报告
+        </div>
+      ) : null}
 
       {/* Legend */}
       {entityTypes.length > 0 && (
         <div style={{
           position: 'absolute', bottom: 24, left: 24, background: 'rgba(255,255,255,0.95)',
-          padding: '12px 16px', borderRadius: 8, border: '1px solid #eaeaea',
-          boxShadow: '0 4px 16px rgba(0,0,0,0.06)', zIndex: 10,
+          padding: '14px 16px', borderRadius: 12, border: '1px solid #eaeaea',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.06)', zIndex: 10, maxWidth: 360,
         }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: '#E91E63', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>节点类型</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#E91E63', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>图谱图例</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 16px', maxWidth: 320 }}>
             {entityTypes.map(t => (
               <div key={t.name} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
                 <span style={{ width: 10, height: 10, borderRadius: '50%', background: t.color, flexShrink: 0 }} />
                 <span>{t.name} <span style={{ color: '#999' }}>({t.count})</span></span>
+              </div>
+            ))}
+          </div>
+          <div style={{ height: 1, background: 'rgba(219,231,243,0.92)', margin: '12px 0' }} />
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#7c3aed', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>关系颜色</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {[
+              ['议题驱动 / 事实关联', '#f97316'],
+              ['互动 / 指向对象', '#2563eb'],
+              ['平台扩散 / 活跃关系', '#16a34a'],
+              ['立场接近 / 风险信号', '#7c3aed'],
+            ].map(([label, color]) => (
+              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: '#475569' }}>
+                <span style={{ width: 26, height: 0, borderTop: `3px solid ${color}` }} />
+                <span>{label}</span>
               </div>
             ))}
           </div>
@@ -1427,20 +1638,27 @@ export default function GraphPanel({
       {/* Detail panel */}
       {selectedItem && (
         <div style={{
-          position: 'absolute', top: 56, right: 20, width: inspectorWidth, maxHeight: 'calc(100% - 100px)',
+          position: 'absolute', top: 56, right: 20, width: effectiveInspectorWidth, maxHeight: 'calc(100% - 100px)',
           background: '#fff', border: '1px solid #eaeaea', borderRadius: 10,
           boxShadow: '0 8px 32px rgba(0,0,0,0.1)', overflow: 'hidden', zIndex: 20,
           display: 'flex', flexDirection: 'column', fontSize: 13,
+          transition: 'width 0.22s ease',
         }}>
           {/* Header */}
           <div style={{
             display: 'flex', alignItems: 'center', padding: '12px 16px',
             background: '#fafafa', borderBottom: '1px solid #eee', flexShrink: 0,
           }}>
-            <span style={{ fontWeight: 600, fontSize: 14, color: '#333' }}>
-              {selectedItem.type === 'node' ? '节点检查器' : '关系检查器'}
-            </span>
-            {selectedItem.type === 'node' && nodeTypeColor && (
+            {!inspectorCollapsed ? (
+              <span style={{ fontWeight: 600, fontSize: 14, color: '#333' }}>
+                {selectedItem.type === 'node' ? '节点检查器' : '关系检查器'}
+              </span>
+            ) : (
+              <span style={{ fontWeight: 700, fontSize: 12, color: '#475569', writingMode: 'vertical-rl', letterSpacing: '0.08em' }}>
+                {selectedItem.type === 'node' ? '节点' : '关系'}
+              </span>
+            )}
+            {!inspectorCollapsed && selectedItem.type === 'node' && nodeTypeColor && (
               <span style={{
                 padding: '3px 10px', borderRadius: 12, fontSize: 11, fontWeight: 500,
                 background: nodeTypeColor, color: '#fff', marginLeft: 'auto', marginRight: 12,
@@ -1448,13 +1666,41 @@ export default function GraphPanel({
                 {getNodeTypeLabel(String(selectedItem.entityType || 'Entity'))}
               </span>
             )}
+            <button
+              onClick={() => setInspectorCollapsed((value) => !value)}
+              style={{
+                marginLeft: inspectorCollapsed ? 'auto' : 0,
+                marginRight: 8,
+                background: 'none',
+                border: 'none',
+                fontSize: 16,
+                cursor: 'pointer',
+                color: '#94a3b8',
+                lineHeight: 1,
+                padding: '0 2px',
+              }}
+              title={inspectorCollapsed ? '展开检查器' : '收起检查器'}
+            >
+              {inspectorCollapsed ? '⟨' : '⟩'}
+            </button>
             <button onClick={() => setSelectedItem(null)} style={{
               background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#aaa', lineHeight: 1, padding: '0 2px',
             }}>×</button>
           </div>
 
           {/* Self-loop content */}
-          {selfLoopData ? (
+          {inspectorCollapsed ? (
+            <div style={{ padding: '14px 10px', display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center', color: '#64748b', fontSize: 11 }}>
+              <span style={{ writingMode: 'vertical-rl', letterSpacing: '0.08em' }}>
+                {selectedItem.type === 'node'
+                  ? getNodeTypeLabel(String(selectedItem.entityType || 'Entity'))
+                  : '关系详情'}
+              </span>
+              <span style={{ writingMode: 'vertical-rl', letterSpacing: '0.08em', color: '#94a3b8' }}>
+                点击箭头展开
+              </span>
+            </div>
+          ) : selfLoopData ? (
             <SelfLoopContent edge={selfLoopData} />
           ) : (
             <div style={{ padding: 16, overflowY: 'auto' as const, flex: 1 }}>
