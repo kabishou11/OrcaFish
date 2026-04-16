@@ -1120,7 +1120,18 @@ export default function GraphPanel({
           ?? ''
         )
         const fact = String(item.rawData?.fact ?? item.fact ?? '')
+        const sourceName = String(
+          item.rawData?.source_name
+          ?? (typeof item.source === 'object' ? item.source?.name : item.source)
+          ?? ''
+        )
+        const targetName = String(
+          item.rawData?.target_name
+          ?? (typeof item.target === 'object' ? item.target?.name : item.target)
+          ?? ''
+        )
         return [source, target, relationType, fact].join('|') === edgeId
+          || [sourceName, targetName, relationType, fact].join('|') === edgeId
       })
       if (!edge) return
       setSelectedItem({

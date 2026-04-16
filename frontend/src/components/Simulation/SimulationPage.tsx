@@ -365,11 +365,13 @@ function ReportViewer({
   onClose,
   countryContext,
   graphContext,
+  onGraphFocus,
 }: {
   runId: string
   onClose: () => void
   countryContext?: CountryContextDraftSummary | null
   graphContext?: DraftGraphContextSummary | null
+  onGraphFocus?: (request: { kind: 'node' | 'edge'; nodeId?: string; edgeId?: string }) => void
 }) {
   const [report, setReport] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -455,6 +457,8 @@ function ReportViewer({
   ]
   const topInheritedEdges = (graphContext?.graph_edges ?? []).slice(0, 3)
   const topInheritedNodes = (graphContext?.graph_nodes ?? []).slice(0, 3)
+  const buildInheritedEdgeFocusId = (edge: NonNullable<DraftGraphContextSummary['graph_edges']>[number]) =>
+    [String(edge.source || ''), String(edge.target || ''), String(edge.type || ''), String(edge.fact || '')].join('|')
 
   return (
     <div className="report-drawer-overlay" onClick={onClose}>
@@ -803,6 +807,15 @@ function ReportViewer({
                               <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                                 {edge.fact || '该关系从议题研判图谱校准阶段继承而来。'}
                               </div>
+                              {onGraphFocus ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onGraphFocus({ kind: 'edge', edgeId: buildInheritedEdgeFocusId(edge) })}
+                                  style={{ marginTop: 8, border: 'none', background: 'none', padding: 0, color: 'var(--accent)', fontSize: '0.68rem', cursor: 'pointer', fontWeight: 600 }}
+                                >
+                                  回主图谱定位这条关系
+                                </button>
+                              ) : null}
                             </div>
                           )) : (
                             <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>还没有继承到关系结构。</div>
@@ -823,6 +836,15 @@ function ReportViewer({
                               <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                                 {node.summary || '该节点从议题研判图谱校准阶段继承而来。'}
                               </div>
+                              {onGraphFocus && node.id ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onGraphFocus({ kind: 'node', nodeId: node.id })}
+                                  style={{ marginTop: 8, border: 'none', background: 'none', padding: 0, color: 'var(--accent)', fontSize: '0.68rem', cursor: 'pointer', fontWeight: 600 }}
+                                >
+                                  回主图谱定位该节点
+                                </button>
+                              ) : null}
                             </div>
                           )) : (
                             <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>还没有继承到节点结构。</div>
@@ -1237,6 +1259,11 @@ export default function SimulationPage() {
       setStoppingRun(false)
     }
   }
+  const focusGraphFromWorkbench = useCallback((request: { kind: 'node' | 'edge'; nodeId?: string; edgeId?: string }) => {
+    setShowReport(false)
+    setViewMode('split')
+    setGraphFocusRequest({ ...request, requestId: Date.now() })
+  }, [])
 
   const statusBadge = (status: string) => {
     const cls = status === 'completed' ? 'badge-done' : status === 'running' ? 'badge-active' : status === 'failed' ? 'badge-failed' : 'badge-pending'
@@ -2443,7 +2470,13 @@ export default function SimulationPage() {
 
       {/* Report Viewer Drawer */}
       {showReport && selectedRun && (
-        <ReportViewer runId={selectedRun.run_id} onClose={() => setShowReport(false)} countryContext={draftCountryContext} graphContext={draftGraphContext} />
+        <ReportViewer
+          runId={selectedRun.run_id}
+          onClose={() => setShowReport(false)}
+          countryContext={draftCountryContext}
+          graphContext={draftGraphContext}
+          onGraphFocus={focusGraphFromWorkbench}
+        />
       )}
     </div>
   )
