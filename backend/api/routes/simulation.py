@@ -27,8 +27,10 @@ from backend.analysis.agents.media import MediaAgent
 from backend.analysis.agents.query import QueryAgent
 from backend.llm.client import LLMClient
 from backend.config import settings
+from backend.graph import ZepTools
 
 router = APIRouter(prefix="/simulation", tags=["Simulation"])
+_ZEP_TOOLS = ZepTools()
 
 
 def _simulation_data_dir() -> str:
@@ -205,6 +207,8 @@ def _restore_run_from_disk(sim_id: str) -> Optional[dict]:
         "max_rounds": max_rounds,
         "enable_twitter": bool(config.get("enable_twitter", True)),
         "enable_reddit": bool(config.get("enable_reddit", True)),
+        "country_context": persisted_state.get("country_context") or config.get("country_context"),
+        "graph_context": persisted_state.get("graph_context") or config.get("graph_context"),
     }
 
     run = {
@@ -226,6 +230,8 @@ def _restore_run_from_disk(sim_id: str) -> Optional[dict]:
         "duration_ms": duration_ms,
         "seed_content": persisted_state.get("seed_content") or config.get("seed_content", ""),
         "simulation_requirement": persisted_state.get("simulation_requirement") or config.get("simulation_requirement", ""),
+        "country_context": persisted_state.get("country_context") or config.get("country_context"),
+        "graph_context": persisted_state.get("graph_context") or config.get("graph_context"),
         "run_config": run_config,
         "project_id": persisted_state.get("project_id") or config.get("project_id", ""),
         "graph_id": persisted_state.get("graph_id") or config.get("graph_id", ""),
@@ -880,6 +886,7 @@ def _refresh_run_graph_metadata(run: dict) -> Dict[str, Any]:
         "project_id": str(run.get("project_id") or graph_id),
         "graph_id": graph_id,
         "graph_source": str(run.get("graph_source") or "graphiti"),
+        "graph_source_mode": str(run.get("graph_source_mode") or ""),
         "graph_entity_count": int(run.get("graph_entity_count") or 0),
         "graph_relation_count": int(run.get("graph_relation_count") or 0),
         "graph_entity_types": list(current_types) if isinstance(current_types, list) else [],
@@ -892,6 +899,7 @@ def _refresh_run_graph_metadata(run: dict) -> Dict[str, Any]:
         from backend.graph import GraphBuilder as RemoteGraphBuilder
 
         graph_info = RemoteGraphBuilder().get_graph_info(graph_id)
+        graph_data = RemoteGraphBuilder().get_graph_data(graph_id)
         if graph_info.node_count or graph_info.edge_count or graph_info.entity_types:
             metadata["graph_entity_count"] = graph_info.node_count
             metadata["graph_relation_count"] = graph_info.edge_count
@@ -899,10 +907,68 @@ def _refresh_run_graph_metadata(run: dict) -> Dict[str, Any]:
             metadata["graph_synced_at"] = datetime.now(UTC).isoformat()
             metadata["node_count"] = graph_info.node_count
             metadata["edge_count"] = graph_info.edge_count
+            metadata["graph_source_mode"] = str(graph_data.get("source_mode") or "")
     except Exception:
         return metadata
 
     return metadata
+
+
+def _build_graph_fact_calibration(
+    graph_id: str,
+    seed: str,
+    simulation_requirement: str,
+    top_topics: list[tuple[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    if not graph_id:
+        return {"queries": [], "facts": [], "edges": [], "nodes": [], "source_mode": "no_graph"}
+
+    candidates: list[str] = []
+    base_seed = _normalize_text(seed)
+    if base_seed:
+        candidates.append(base_seed)
+    requirement = _normalize_text(simulation_requirement)
+    if requirement:
+        candidates.append(requirement[:48])
+    for topic_name, _ in top_topics[:3]:
+        normalized = _normalize_text(str(topic_name))
+        if normalized:
+            candidates.append(normalized)
+
+    queries: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        if item and item not in seen:
+            seen.add(item)
+            queries.append(item)
+
+    all_facts: list[str] = []
+    all_edges: list[dict[str, Any]] = []
+    all_nodes: list[dict[str, Any]] = []
+    source_mode = "graph_unavailable"
+
+    for query in queries[:4]:
+        result = _ZEP_TOOLS.search_graph(graph_id=graph_id, query=query, limit=4, scope="both")
+        source_mode = result.source_mode or source_mode
+        for fact in result.facts:
+            if fact and fact not in all_facts:
+                all_facts.append(fact)
+        for edge in result.edges:
+            edge_uuid = str(edge.get("uuid") or "")
+            if edge_uuid and not any(str(item.get("uuid") or "") == edge_uuid for item in all_edges):
+                all_edges.append(edge)
+        for node in result.nodes:
+            node_uuid = str(node.get("uuid") or "")
+            if node_uuid and not any(str(item.get("uuid") or "") == node_uuid for item in all_nodes):
+                all_nodes.append(node)
+
+    return {
+        "queries": queries[:4],
+        "facts": all_facts[:8],
+        "edges": all_edges[:6],
+        "nodes": all_nodes[:6],
+        "source_mode": source_mode,
+    }
 
 
 # ── Scenarios ──────────────────────────────────────────────────────────────────
@@ -946,6 +1012,8 @@ async def create_run(req: SimulationCreateRequest) -> dict:
         "max_rounds": req.max_rounds,
         "enable_twitter": req.enable_twitter,
         "enable_reddit": req.enable_reddit,
+        "country_context": req.country_context,
+        "graph_context": req.graph_context,
     }
 
     config_path = os.path.join(sim_dir, "simulation_config.json")
@@ -961,6 +1029,7 @@ async def create_run(req: SimulationCreateRequest) -> dict:
     run = {
         "run_id": run_id,
         "simulation_id": sim_id,
+        "engine_mode": "rule_based_preview",
         "status": "created",
         "stop_requested": False,
         "rounds_completed": 0,
@@ -973,6 +1042,8 @@ async def create_run(req: SimulationCreateRequest) -> dict:
         "duration_ms": None,
         "seed_content": req.seed_content,
         "simulation_requirement": req.simulation_requirement,
+        "country_context": req.country_context,
+        "graph_context": req.graph_context,
         "run_config": run_config,
         **graph_metadata,
     }
@@ -1012,7 +1083,7 @@ async def get_run(run_id: str) -> dict:
 
 
 async def _run_simulation_bg(run_id: str, sim_id: str, req: SimulationCreateRequest):
-    """Background simulation执行 — 启动 OASIS mock 循环，等待完成后写入 final_states"""
+    """后台执行未来预测预演循环，完成后写入 final_states。"""
     import asyncio
 
     _ensure_run_registry_loaded()
@@ -1043,6 +1114,8 @@ async def _run_simulation_bg(run_id: str, sim_id: str, req: SimulationCreateRequ
                 "max_rounds": req.max_rounds,
                 "enable_twitter": req.enable_twitter,
                 "enable_reddit": req.enable_reddit,
+                "country_context": req.country_context,
+                "graph_context": req.graph_context,
                 "project_id": run.get("project_id", ""),
                 "graph_id": run.get("graph_id", ""),
                 "graph_source": run.get("graph_source", "local_only"),
@@ -1253,6 +1326,8 @@ async def start_run(run_id: str) -> dict:
         max_rounds=run_config["max_rounds"] if "max_rounds" in run_config else run.get("max_rounds", settings.simulation_rounds),
         enable_twitter=run_config["enable_twitter"] if "enable_twitter" in run_config else True,
         enable_reddit=run_config["enable_reddit"] if "enable_reddit" in run_config else True,
+        country_context=run_config["country_context"] if "country_context" in run_config else run.get("country_context"),
+        graph_context=run_config["graph_context"] if "graph_context" in run_config else run.get("graph_context"),
     )
     run["stop_requested"] = False
     run["status"] = "running"
@@ -1295,6 +1370,7 @@ async def get_run_status(run_id: str) -> dict:
     if run.get("status") == "created":
         return {
             "simulation_id": sim_id,
+            "engine_mode": run.get("engine_mode", "rule_based_preview"),
             "status": "created",
             "current_round": 0,
             "total_rounds": run.get("max_rounds", settings.simulation_rounds),
@@ -1399,6 +1475,7 @@ async def get_run_status(run_id: str) -> dict:
 
     return {
         "simulation_id": sim_id,
+        "engine_mode": run.get("engine_mode", "rule_based_preview"),
         "status": effective_status,
         "current_round": oasis_status.current_round,
         "total_rounds": total,
@@ -2250,6 +2327,12 @@ async def get_simulation_report(run_id: str) -> dict:
         top_topics=top_topics,
         recent_events=recent_events,
     )
+    graph_calibration = _build_graph_fact_calibration(
+        graph_id=str(run.get("graph_id") or ""),
+        seed=seed,
+        simulation_requirement=str(run.get("simulation_requirement") or ""),
+        top_topics=top_topics,
+    )
     source_facts = external_calibration["source_facts"]
     source_lines = external_calibration["source_lines"]
     calibration_queries = external_calibration["queries"]
@@ -2257,6 +2340,13 @@ async def get_simulation_report(run_id: str) -> dict:
     calibration_note = external_calibration["calibration_note"]
     calibration_status = external_calibration["status"]
     provider_hits = external_calibration["provider_hits"]
+    graph_fact_queries = graph_calibration["queries"]
+    graph_fact_lines = graph_calibration["facts"]
+    graph_fact_edges = graph_calibration["edges"]
+    graph_fact_nodes = graph_calibration["nodes"]
+    graph_fact_source_mode = graph_calibration["source_mode"]
+    country_context = run.get("country_context") if isinstance(run.get("country_context"), dict) else {}
+    inherited_graph_context = run.get("graph_context") if isinstance(run.get("graph_context"), dict) else {}
 
     # ── HTML helpers ──────────────────────────────────────────────────────────
     safe_run_id = escape(str(run_id))
@@ -2265,6 +2355,26 @@ async def get_simulation_report(run_id: str) -> dict:
     safe_generated_at = escape(datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC'))
     safe_calibration_note = escape(str(calibration_note))
     calibration_status_label = "外部情报已补强" if calibration_status == "enriched" else "外部补强不足"
+    graph_source_mode_label = {
+        "remote_search": "图谱搜索接口已命中",
+        "local_remote_nodes_edges": "已基于真实节点/关系做图谱检索",
+        "local_remote_nodes_edges+snapshot": "真实节点/关系 + 本地快照补层",
+        "local_episodes": "当前仍主要基于图谱片段检索",
+        "local_episodes+snapshot": "图谱片段 + 本地快照补层",
+        "local_snapshot": "当前仅命中本地快照",
+        "graph_unavailable": "图谱检索暂不可用",
+        "no_graph": "本次记录暂无图谱",
+    }.get(graph_fact_source_mode, graph_fact_source_mode or "图谱检索状态未知")
+    inherited_graph_mode_label = {
+        "remote_search": "来自议题研判图谱搜索",
+        "local_remote_nodes_edges": "来自真实节点/关系校准",
+        "local_remote_nodes_edges+snapshot": "来自真实节点/关系与快照补层",
+        "local_episodes": "来自图谱片段校准",
+        "local_episodes+snapshot": "来自图谱片段与快照补层",
+        "local_snapshot": "来自本地快照校准",
+        "graph_unavailable": "当时未连通图谱服务",
+        "no_graph": "当时尚未生成图谱上下文",
+    }.get(str(inherited_graph_context.get("graph_source_mode") or ""), str(inherited_graph_context.get("graph_source_mode") or "") or "等待继承图谱校准")
 
     status_badge = "badge-done" if status == "completed" else "badge-fail" if status == "failed" else "badge-run"
     calibration_badge = "badge-done" if calibration_status == "enriched" else "badge-warn"
@@ -2275,7 +2385,7 @@ async def get_simulation_report(run_id: str) -> dict:
         rows = []
         for name, cl in top_topics:
             heat = "🔥" if int(cl["count"]) >= 5 else "📌"
-            plats = "双平台" if len(cl["platforms"]) > 1 else ("Info Plaza" if "twitter" in cl["platforms"] else "Topic Comm.")
+            plats = "双平台" if len(cl["platforms"]) > 1 else ("信息广场" if "twitter" in cl["platforms"] else "话题社区")
             rows.append(f"<tr><td>{heat} {escape(str(name))}</td><td>{cl['count']}</td><td>{len(cl['agents'])}</td><td>{plats}</td></tr>")
         return "".join(rows)
 
@@ -2297,7 +2407,7 @@ async def get_simulation_report(run_id: str) -> dict:
             belief = belief_map.get(aid, 0.5)
             risk_cls = "high" if belief > 0.65 else ("low" if belief < 0.35 else "")
             dominant_type = max(s["types"], key=s["types"].get) if s["types"] else "—"
-            plat_label = "Info Plaza" if s["platform"] == "twitter" else "Topic Comm."
+            plat_label = "信息广场" if s["platform"] == "twitter" else "话题社区"
             rows.append(
                 f"<tr><td>{escape(s['name'])}</td><td>{plat_label}</td>"
                 f"<td>{s['total']}</td><td>{escape(dominant_type)}</td>"
@@ -2310,7 +2420,7 @@ async def get_simulation_report(run_id: str) -> dict:
             return "<p style='color:#94a3b8'>暂无轮次数据</p>"
         rows = []
         for (rnum, plat), rd in timeline_rows:
-            plat_label = "Info Plaza" if plat == "twitter" else "Topic Comm."
+            plat_label = "信息广场" if plat == "twitter" else "话题社区"
             dominant = max(rd["types"], key=rd["types"].get) if rd["types"] else "—"
             events_str = "；".join(escape(e) for e in rd["events"]) if rd["events"] else "—"
             rows.append(
@@ -2345,9 +2455,9 @@ async def get_simulation_report(run_id: str) -> dict:
         if tw_count > 0 and rd_count > 0:
             ratio = tw_count / max(rd_count, 1)
             if ratio > 3:
-                points.append("Info Plaza 动作量显著高于 Topic Community，舆论扩散以广播式为主，深度讨论相对不足。")
+                points.append("信息广场动作量显著高于话题社区，舆论扩散以广播式为主，深度讨论相对不足。")
             elif ratio < 0.5:
-                points.append("Topic Community 动作量显著高于 Info Plaza，议题正在社区内深度发酵，需关注是否向公共广场溢出。")
+                points.append("话题社区动作量显著高于信息广场，议题正在社区内深度发酵，需关注是否向公共广场溢出。")
         if not points:
             points.append("当前数据量有限，建议在推演完成后重新生成报告以获取更完整的观察点。")
         return "".join(f"<li>{p}</li>" for p in points)
@@ -2401,6 +2511,129 @@ async def get_simulation_report(run_id: str) -> dict:
                 "</tr>"
             )
         return "".join(rows)
+
+    def graph_queries_html() -> str:
+        return _html_list([escape(item) for item in graph_fact_queries], "本次未生成图谱检索词")
+
+    def graph_facts_html() -> str:
+        return _html_list([escape(item) for item in graph_fact_lines], "当前图谱还没有返回可用事实，可能仍在回退到片段模式。")
+
+    def graph_edge_rows_html() -> str:
+        if not graph_fact_edges:
+            return "<tr><td colspan='4' style='color:#94a3b8'>暂无命中的关系事实</td></tr>"
+        rows = []
+        for edge in graph_fact_edges:
+            rows.append(
+                "<tr>"
+                f"<td>{escape(str(edge.get('source_node_name') or edge.get('source_node_uuid') or '未知节点'))}</td>"
+                f"<td>{escape(str(edge.get('name') or edge.get('fact_type') or 'related_to'))}</td>"
+                f"<td>{escape(str(edge.get('target_node_name') or edge.get('target_node_uuid') or '未知节点'))}</td>"
+                f"<td>{escape(str(edge.get('fact') or '图谱命中关系'))}</td>"
+                "</tr>"
+            )
+        return "".join(rows)
+
+    def graph_node_rows_html() -> str:
+        if not graph_fact_nodes:
+            return "<tr><td colspan='3' style='color:#94a3b8'>暂无命中的图谱节点</td></tr>"
+        rows = []
+        for node in graph_fact_nodes:
+            labels = node.get("labels") if isinstance(node.get("labels"), list) else []
+            label_text = " / ".join(str(label) for label in labels if str(label) not in {"Entity", "Node"}) or "图谱节点"
+            summary = escape(str(node.get("summary") or "")) or "该节点已命中，但摘要仍在补全。"
+            rows.append(
+                "<tr>"
+                f"<td>{escape(str(node.get('name') or '未命名节点'))}</td>"
+                f"<td>{escape(label_text)}</td>"
+                f"<td>{summary}</td>"
+                "</tr>"
+            )
+        return "".join(rows)
+
+    def inherited_country_context_html() -> str:
+        if not country_context:
+            return "<div class='hint'>这条未来预测不是从国家观察包发起的，当前报告没有继承全球观测上下文。</div>"
+        country_name = escape(str(country_context.get("country_name") or country_context.get("name") or country_context.get("iso") or "未命名地区"))
+        iso = escape(str(country_context.get("iso") or "—"))
+        score = country_context.get("score")
+        level = escape(str(country_context.get("level") or "unknown"))
+        latest_activity = escape(str(country_context.get("latest_activity") or "等待新的观测同步"))
+        news_count = int(country_context.get("news_count") or 0)
+        signal_count = int(country_context.get("signal_count") or 0)
+        focal_count = int(country_context.get("focal_count") or 0)
+        narrative = escape(str(country_context.get("narrative") or "这条预测沿着全球观测阶段的国家观察包继续展开。"))
+        top_signal_types = country_context.get("top_signal_types") if isinstance(country_context.get("top_signal_types"), list) else []
+        top_headlines = country_context.get("top_headlines") if isinstance(country_context.get("top_headlines"), list) else []
+        signal_tags = "".join(
+            f"<span class='badge badge-run'>{escape(str(item))}</span>"
+            for item in top_signal_types[:4]
+        )
+        score_badge = f"<span class='badge badge-run'>CII {float(score):.1f}</span>" if isinstance(score, (int, float)) else ""
+        headline_html = (
+            f"<div class='hint' style='margin-top:12px'><strong>观测起点：</strong>{escape(str(top_headlines[0]))}</div>"
+            if top_headlines else ""
+        )
+        return (
+            "<div>"
+            "<h2>国家观察包</h2>"
+            f"<p><span class='badge badge-run'>{country_name} · {iso}</span> "
+            f"<span class='badge badge-warn'>风险等级 {level}</span> "
+            f"{score_badge}</p>"
+            f"<p>{narrative}</p>"
+            f"<p class='hint'>最近活动：{latest_activity} · 新闻 {news_count} 条 · 信号 {signal_count} 条 · 焦点 {focal_count} 条</p>"
+            f"{signal_tags if signal_tags else ''}"
+            f"{headline_html}"
+            "</div>"
+        )
+
+    def inherited_graph_context_html() -> str:
+        if not inherited_graph_context:
+            return "<div class='hint'>当前没有从议题研判阶段继承图谱校准，报告主体将主要依赖当前运行中的图谱事实校准。</div>"
+        queries = inherited_graph_context.get("graph_queries") if isinstance(inherited_graph_context.get("graph_queries"), list) else []
+        facts = inherited_graph_context.get("graph_facts") if isinstance(inherited_graph_context.get("graph_facts"), list) else []
+        edges = inherited_graph_context.get("graph_edges") if isinstance(inherited_graph_context.get("graph_edges"), list) else []
+        nodes = inherited_graph_context.get("graph_nodes") if isinstance(inherited_graph_context.get("graph_nodes"), list) else []
+        graph_id = escape(str(inherited_graph_context.get("graph_id") or "未命名图谱"))
+        query_html = _html_list([escape(str(item)) for item in queries[:5]], "没有继承到检索词")
+        fact_html = _html_list([escape(str(item)) for item in facts[:4]], "没有继承到事实摘录")
+        edge_rows = []
+        for edge in edges[:6]:
+            edge_rows.append(
+                "<tr>"
+                f"<td>{escape(str(edge.get('source') or '未知节点'))}</td>"
+                f"<td>{escape(str(edge.get('type') or 'related_to'))}</td>"
+                f"<td>{escape(str(edge.get('target') or '未知节点'))}</td>"
+                f"<td>{escape(str(edge.get('fact') or '继承关系'))}</td>"
+                "</tr>"
+            )
+        node_rows = []
+        for node in nodes[:6]:
+            node_rows.append(
+                "<tr>"
+                f"<td>{escape(str(node.get('name') or node.get('id') or '未命名节点'))}</td>"
+                f"<td>{escape(str(node.get('type') or '图谱节点'))}</td>"
+                f"<td>{escape(str(node.get('summary') or '该节点从议题研判阶段继承而来。'))}</td>"
+                "</tr>"
+            )
+        edge_table = "".join(edge_rows) if edge_rows else "<tr><td colspan='4' style='color:#94a3b8'>没有继承到关系结构</td></tr>"
+        node_table = "".join(node_rows) if node_rows else "<tr><td colspan='3' style='color:#94a3b8'>没有继承到节点结构</td></tr>"
+        return (
+            "<div>"
+            "<h2>继承的图谱校准</h2>"
+            f"<p><span class='badge badge-run'>{escape(inherited_graph_mode_label)}</span> "
+            f"<span class='badge badge-warn'>图谱 ID {graph_id}</span></p>"
+            f"<p class='hint'>这部分来自议题研判阶段的结构化校准，用来说明本次未来预测一开始沿着什么节点、关系和事实进入图谱。</p>"
+            f"<p class='hint'>继承了 {len(queries)} 个检索词、{len(facts)} 条事实、{len(edges)} 条关系、{len(nodes)} 个节点。</p>"
+            "<div class='grid-2'>"
+            f"<div><h2>继承检索词</h2><ul>{query_html}</ul></div>"
+            f"<div><h2>继承事实</h2><ul>{fact_html}</ul></div>"
+            "</div>"
+            "<div class='grid-2'>"
+            f"<div><h2>继承关系</h2><table><tr><th>源节点</th><th>关系</th><th>目标节点</th><th>说明</th></tr>{edge_table}</table></div>"
+            f"<div><h2>继承节点</h2><table><tr><th>节点</th><th>类型</th><th>摘要</th></tr>{node_table}</table></div>"
+            "</div>"
+            "</div>"
+        )
 
 
     # Build HTML report
@@ -2457,15 +2690,23 @@ async def get_simulation_report(run_id: str) -> dict:
     <div class="stats">
       <div class="stat"><div class="stat-val">{len(agents)}</div><div class="stat-lbl">代理体</div></div>
       <div class="stat"><div class="stat-val">{total_actions}</div><div class="stat-lbl">总动作</div></div>
-      <div class="stat"><div class="stat-val">{tw_count}</div><div class="stat-lbl">Info Plaza</div></div>
-      <div class="stat"><div class="stat-val">{rd_count}</div><div class="stat-lbl">Topic Comm.</div></div>
+      <div class="stat"><div class="stat-val">{tw_count}</div><div class="stat-lbl">信息广场</div></div>
+      <div class="stat"><div class="stat-val">{rd_count}</div><div class="stat-lbl">话题社区</div></div>
     </div>
   </div>
   <div class="content">
     <div class="section-card">
       <h2>执行摘要</h2>
-      <p>本轮推演围绕 <strong>{safe_seed}</strong> 展开，Info Plaza / Topic Community 分别推进至 <strong>{tw_max}</strong> / <strong>{rd_max}</strong> 轮，累计形成 <strong>{total_actions}</strong> 条动作记录，覆盖 <strong>{len(agents)}</strong> 个活跃代理体。</p>
-      <p>系统当前<strong>{'已趋于收敛' if convergence else '仍在持续演化'}</strong>，高信念代理体 <span class="high">{len(high_risk)}</span> 个，低信念代理体 <span class="low">{len(low_risk)}</span> 个。Info Plaza 以 <strong>{escape(str(tw_dominant))}</strong> 为主导动作，Topic Community 以 <strong>{escape(str(rd_dominant))}</strong> 为主导动作。</p>
+      <p>本轮推演围绕 <strong>{safe_seed}</strong> 展开，信息广场 / 话题社区 分别推进至 <strong>{tw_max}</strong> / <strong>{rd_max}</strong> 轮，累计形成 <strong>{total_actions}</strong> 条动作记录，覆盖 <strong>{len(agents)}</strong> 个活跃代理体。</p>
+      <p>系统当前<strong>{'已趋于收敛' if convergence else '仍在持续演化'}</strong>，高信念代理体 <span class="high">{len(high_risk)}</span> 个，低信念代理体 <span class="low">{len(low_risk)}</span> 个。信息广场以 <strong>{escape(str(tw_dominant))}</strong> 为主导动作，话题社区以 <strong>{escape(str(rd_dominant))}</strong> 为主导动作。</p>
+    </div>
+
+    <div class="section-card">
+      <h2>预测起点上下文</h2>
+      <div class="grid-2">
+        {inherited_country_context_html()}
+        {inherited_graph_context_html()}
+      </div>
     </div>
 
     <div class="section-card">
@@ -2486,6 +2727,41 @@ async def get_simulation_report(run_id: str) -> dict:
         </div>
       </div>
       <p class="hint">以下外部公开线索仅用于校准推演热点，不替代内部轨迹本身。外部补强不足时，已明确标注而不是伪装成已核实结论。</p>
+    </div>
+
+    <div class="section-card">
+      <h2>图谱事实校准</h2>
+      <p><span class="badge badge-run">{escape(graph_source_mode_label)}</span> 当前从知识图谱反查与预测热点直接相关的事实、节点和关系，用来判断本次未来路径是否具备结构支撑。</p>
+      <div class="grid-2">
+        <div>
+          <h2>图谱检索词</h2>
+          <ul>
+            {graph_queries_html()}
+          </ul>
+        </div>
+        <div>
+          <h2>命中事实摘录</h2>
+          <ul>
+            {graph_facts_html()}
+          </ul>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div>
+          <h2>命中的关系</h2>
+          <table>
+            <tr><th>源节点</th><th>关系</th><th>目标节点</th><th>事实</th></tr>
+            {graph_edge_rows_html()}
+          </table>
+        </div>
+        <div>
+          <h2>命中的节点</h2>
+          <table>
+            <tr><th>节点</th><th>类型</th><th>摘要</th></tr>
+            {graph_node_rows_html()}
+          </table>
+        </div>
+      </div>
     </div>
 
     <div class="grid-2">
@@ -2509,8 +2785,8 @@ async def get_simulation_report(run_id: str) -> dict:
       <div class="section-card">
         <h2>平台对比</h2>
         <ul>
-          <li>Info Plaza 动作量 <strong>{tw_count}</strong>，主导动作 <strong>{escape(str(tw_dominant))}</strong>，最高轮次 <strong>R{tw_max}</strong></li>
-          <li>Topic Community 动作量 <strong>{rd_count}</strong>，主导动作 <strong>{escape(str(rd_dominant))}</strong>，最高轮次 <strong>R{rd_max}</strong></li>
+          <li>信息广场动作量 <strong>{tw_count}</strong>，主导动作 <strong>{escape(str(tw_dominant))}</strong>，最高轮次 <strong>R{tw_max}</strong></li>
+          <li>话题社区动作量 <strong>{rd_count}</strong>，主导动作 <strong>{escape(str(rd_dominant))}</strong>，最高轮次 <strong>R{rd_max}</strong></li>
           <li>双平台动作量比约为 <strong>{(tw_count / max(rd_count, 1)):.2f}</strong> : 1</li>
         </ul>
       </div>

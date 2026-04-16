@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.analysis.agents.base import extract_source_facts
 from backend.config import settings
+from backend.graph import GraphBuilder as KnowledgeGraphBuilder, ZepTools
 from backend.models.analysis import (
     AnalysisAgentState,
     AnalysisRequest,
@@ -41,6 +42,8 @@ _AGENT_LABELS = {
     "insight": "洞察代理体",
     "report": "报告编排器",
 }
+
+_ANALYSIS_GRAPH_TOOLS = ZepTools()
 
 
 def _extract_query_terms(query: str) -> list[str]:
@@ -171,6 +174,95 @@ def _merge_source_facts(
         if len(merged) >= limit:
             break
     return merged
+
+
+def _build_graph_calibration(query: str, news_digest: list[dict[str, str]], source_facts: list[dict[str, str]]) -> dict[str, object]:
+    text_chunks: list[str] = []
+    if query.strip():
+        text_chunks.append(query.strip())
+    for fact in source_facts[:8]:
+        line = " ".join(
+            part for part in [
+                str(fact.get("title") or "").strip(),
+                str(fact.get("summary") or "").strip(),
+                str(fact.get("paragraph_title") or "").strip(),
+            ]
+            if part
+        ).strip()
+        if line:
+            text_chunks.append(line)
+    for item in news_digest[:8]:
+        line = " ".join(
+            part for part in [
+                str(item.get("title") or "").strip(),
+                str(item.get("summary") or "").strip(),
+                str(item.get("country") or "").strip(),
+                str(item.get("signal_type") or "").strip(),
+            ]
+            if part
+        ).strip()
+        if line:
+            text_chunks.append(line)
+
+    deduped_chunks: list[str] = []
+    seen_chunks: set[str] = set()
+    for chunk in text_chunks:
+        normalized = chunk.strip()
+        if normalized and normalized not in seen_chunks:
+            seen_chunks.add(normalized)
+            deduped_chunks.append(normalized)
+
+    if not deduped_chunks:
+        return {
+            "graph_id": None,
+            "graph_source_mode": "no_graph",
+            "graph_queries": [],
+            "graph_facts": [],
+            "graph_edges": [],
+            "graph_nodes": [],
+        }
+
+    builder = KnowledgeGraphBuilder()
+    graph_id = builder.create_graph(f"analysis::{query[:24] or 'topic'}")
+    episode_ids = builder.add_text_batch(graph_id, deduped_chunks[:12])
+    builder.wait_for_processing(episode_ids)
+
+    query_candidates = [query.strip(), *_extract_query_terms(query)]
+    search_queries: list[str] = []
+    seen_queries: set[str] = set()
+    for item in query_candidates:
+        normalized = str(item or "").strip()
+        if normalized and normalized not in seen_queries:
+            seen_queries.add(normalized)
+            search_queries.append(normalized)
+
+    facts: list[str] = []
+    edges: list[dict[str, object]] = []
+    nodes: list[dict[str, object]] = []
+    source_mode = "graph_unavailable"
+    for graph_query in search_queries[:4]:
+        result = _ANALYSIS_GRAPH_TOOLS.search_graph(graph_id=graph_id, query=graph_query, limit=4, scope="both")
+        source_mode = result.source_mode or source_mode
+        for fact in result.facts:
+            if fact and fact not in facts:
+                facts.append(fact)
+        for edge in result.edges:
+            edge_uuid = str(edge.get("uuid") or "")
+            if edge_uuid and not any(str(item.get("uuid") or "") == edge_uuid for item in edges):
+                edges.append(edge)
+        for node in result.nodes:
+            node_uuid = str(node.get("uuid") or "")
+            if node_uuid and not any(str(item.get("uuid") or "") == node_uuid for item in nodes):
+                nodes.append(node)
+
+    return {
+        "graph_id": graph_id,
+        "graph_source_mode": source_mode,
+        "graph_queries": search_queries[:4],
+        "graph_facts": facts[:8],
+        "graph_edges": edges[:6],
+        "graph_nodes": nodes[:6],
+    }
 
 
 def _format_source_fact_lines(source_facts: list[dict[str, str]], limit: int = 6) -> list[str]:
@@ -902,6 +994,7 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
 
     await maybe_collect_digest(timeout=1.2)
     merged_source_facts = _merge_source_facts(agent_facts, news_digest)
+    graph_calibration = await asyncio.to_thread(_build_graph_calibration, query, news_digest, merged_source_facts)
     source_counts["final"] = max(len(merged_source_facts), sum(source_counts[key] for key in ("query", "media", "insight")), len(news_digest))
     for key, used in fallback_map.items():
         if not used:
@@ -925,7 +1018,23 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
     else:
         merged = _build_structured_final_report(query, results, news_digest, fallback_map, merged_source_facts)
     if task:
+        task.graph_id = graph_calibration.get("graph_id")  # type: ignore[assignment]
+        task.graph_source_mode = str(graph_calibration.get("graph_source_mode") or "")
+        task.graph_queries = list(graph_calibration.get("graph_queries") or [])
+        task.graph_facts = list(graph_calibration.get("graph_facts") or [])
+        task.graph_edges = list(graph_calibration.get("graph_edges") or [])
+        task.graph_nodes = list(graph_calibration.get("graph_nodes") or [])
         _append_timeline(task, _make_timeline_event("report", "正在编排综合结论", "三路结果已经汇总，正在去重并生成结构化综合报告。", "running"))
+        if task.graph_facts or task.graph_edges or task.graph_nodes:
+            _append_timeline(
+                task,
+                _make_timeline_event(
+                    "graph",
+                    "图谱校准已接入",
+                    f"已从临时知识图谱命中 {len(task.graph_facts)} 条事实、{len(task.graph_edges)} 条关系、{len(task.graph_nodes)} 个节点。",
+                    "done",
+                ),
+            )
         _update_task_snapshot(
             task,
             results=results,
@@ -1113,6 +1222,12 @@ async def trigger_analysis(req: AnalysisRequest) -> dict:
         "agent_metrics": {key: _export_model(value) for key, value in task.agent_metrics.items()},
         "sections": [_export_model(section) for section in task.sections],
         "timeline": [_export_model(event) for event in task.timeline],
+        "graph_id": task.graph_id,
+        "graph_source_mode": task.graph_source_mode,
+        "graph_queries": task.graph_queries,
+        "graph_facts": task.graph_facts,
+        "graph_edges": task.graph_edges,
+        "graph_nodes": task.graph_nodes,
         "ui_message": task.ui_message,
         "last_update_at": task.last_update_at.isoformat() if task.last_update_at else None,
         "message": "多智能体分析已提交，Query + Media + Insight 并行运行中，请通过 /api/analysis/{task_id} 查询结果",
@@ -1142,6 +1257,12 @@ async def get_analysis_task(task_id: str) -> dict:
         "agent_metrics": {key: _export_model(value) for key, value in (task.agent_metrics or {}).items()},
         "sections": [_export_model(section) for section in task.sections],
         "timeline": [_export_model(event) for event in task.timeline],
+        "graph_id": task.graph_id,
+        "graph_source_mode": task.graph_source_mode,
+        "graph_queries": task.graph_queries,
+        "graph_facts": task.graph_facts,
+        "graph_edges": task.graph_edges,
+        "graph_nodes": task.graph_nodes,
         "last_update_at": task.last_update_at.isoformat() if task.last_update_at else None,
         "query_report": task.query_report,
         "media_report": task.media_report,

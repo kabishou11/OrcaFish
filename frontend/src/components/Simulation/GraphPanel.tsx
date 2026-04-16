@@ -65,6 +65,13 @@ interface GraphPanelProps {
   isSimulating?: boolean
   onToggleMaximize?: () => void
   isFullscreen?: boolean
+  focusRequest?: {
+    kind: 'node' | 'edge'
+    nodeId?: string
+    edgeId?: string
+    requestId: number
+  } | null
+  onFocusHandled?: () => void
 }
 
 function EmptyGraphState({
@@ -464,6 +471,8 @@ export default function GraphPanel({
   isSimulating = false,
   onToggleMaximize,
   isFullscreen = false,
+  focusRequest,
+  onFocusHandled,
 }: GraphPanelProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -1086,6 +1095,61 @@ export default function GraphPanel({
       })
     }
   }, [colorMap, graphData])
+  const selectEdgeByIdentity = useMemo(() => {
+    return (edgeId: string) => {
+      if (!graphData?.edges?.length || !graphData?.nodes?.length) return
+      const edge = graphData.edges.find((item) => {
+        const source = String(
+          item.rawData?.source_node_uuid
+          ?? item.source_node_uuid
+          ?? (typeof item.source === 'object' ? item.source?.id : item.source)
+          ?? ''
+        )
+        const target = String(
+          item.rawData?.target_node_uuid
+          ?? item.target_node_uuid
+          ?? (typeof item.target === 'object' ? item.target?.id : item.target)
+          ?? ''
+        )
+        const relationType = String(
+          item.rawData?.type
+          ?? item.type
+          ?? item.fact_type
+          ?? item.name
+          ?? item.label
+          ?? ''
+        )
+        const fact = String(item.rawData?.fact ?? item.fact ?? '')
+        return [source, target, relationType, fact].join('|') === edgeId
+      })
+      if (!edge) return
+      setSelectedItem({
+        type: 'edge',
+        data: {
+          ...edge,
+          source_name: typeof edge.source === 'object' ? edge.source.name : String(edge.rawData?.source_name || edge.source),
+          target_name: typeof edge.target === 'object' ? edge.target.name : String(edge.rawData?.target_name || edge.target),
+          type: edge.type || edge.fact_type || edge.name || edge.label || 'RELATED',
+          properties: (edge.rawData as Record<string, unknown> | undefined)?.properties
+            ?? (edge.rawData as Record<string, unknown> | undefined)?.attributes
+            ?? edge.rawData
+            ?? {},
+        },
+      })
+    }
+  }, [graphData])
+  useEffect(() => {
+    if (!focusRequest) return
+    if (focusRequest.kind === 'node' && focusRequest.nodeId) {
+      selectNodeById(focusRequest.nodeId)
+      onFocusHandled?.()
+      return
+    }
+    if (focusRequest.kind === 'edge' && focusRequest.edgeId) {
+      selectEdgeByIdentity(focusRequest.edgeId)
+      onFocusHandled?.()
+    }
+  }, [focusRequest, onFocusHandled, selectEdgeByIdentity, selectNodeById])
   const selectedNodeRelations = useMemo<RelationInspectorItem[]>(() => {
     if (selectedItem?.type !== 'node' || !graphData?.edges?.length || !graphData?.nodes?.length) return []
     const nodeId = String(selectedItem.data?.id || '')

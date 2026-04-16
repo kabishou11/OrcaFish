@@ -5,6 +5,7 @@ import { useAnalysisStore, type AnalysisResult } from '../../stores/analysisStor
 import { useIntelligenceStore, type ObservationCountryContext } from '../../stores/intelligenceStore'
 import { useSimulationDraftStore } from '../../stores/simulationDraftStore'
 import WorkflowGuide, { type WorkflowGuideStep } from '../WorkflowGuide'
+import useViewportMatch from '../../hooks/useViewportMatch'
 
 const TOPIC_COORDS: Record<string, [number, number]> = {
   台海: [23.7, 121.0],
@@ -493,6 +494,8 @@ function CountryContextBrief({
 }
 
 export default function AnalysisPage() {
+  const isCompact = useViewportMatch(1180)
+  const isNarrow = useViewportMatch(860)
   const navigate = useNavigate()
   const result = useAnalysisStore((s) => s.result)
   const setResult = useAnalysisStore((s) => s.setResult)
@@ -691,6 +694,14 @@ export default function AnalysisPage() {
       max_rounds: 48,
       source: 'analysis',
       source_task_id: result?.task_id,
+      graph_context: {
+        graph_id: result?.graph_id ?? undefined,
+        graph_source_mode: result?.graph_source_mode ?? undefined,
+        graph_queries: result?.graph_queries ?? [],
+        graph_facts: result?.graph_facts ?? [],
+        graph_edges: result?.graph_edges ?? [],
+        graph_nodes: result?.graph_nodes ?? [],
+      },
       country_context: activeCountryContext ?? undefined,
     })
     navigate('/simulation')
@@ -733,8 +744,8 @@ export default function AnalysisPage() {
         )}
       />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(340px, 380px) minmax(0, 1fr)', gap: 'var(--sp-4)', alignItems: 'start' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)', position: 'sticky', top: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isCompact ? '1fr' : 'minmax(340px, 380px) minmax(0, 1fr)', gap: 'var(--sp-4)', alignItems: 'start' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)', position: isCompact ? 'relative' : 'sticky', top: isCompact ? undefined : 12 }}>
           <div className="panel" style={{ overflow: 'hidden' }}>
             <div style={{ padding: 'var(--sp-5)', background: 'linear-gradient(135deg, rgba(37,99,235,0.06), rgba(124,58,237,0.04), rgba(22,163,74,0.03))', borderBottom: '1px solid var(--border)' }}>
               <div style={{ fontSize: '0.72rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.12em', marginBottom: 8 }}>研判工作台</div>
@@ -785,7 +796,7 @@ export default function AnalysisPage() {
                 </div>
               </form>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : isCompact ? 'repeat(2, minmax(0, 1fr))' : 'repeat(3, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
                 <StageMetric label="整体进度" value={`${currentProgress}%`} color="#2563eb" />
                 <StageMetric label="已到达板块" value={sectionRows.filter((section) => Boolean(section.content)).length} color="#7c3aed" />
                 <StageMetric label="来源数" value={result?.source_count ?? keywordRows.length} color="#16a34a" />
@@ -870,7 +881,7 @@ export default function AnalysisPage() {
                 </div>
               </div>
             </div>
-            <div className="panel-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
+            <div className="panel-body" style={{ display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : 'repeat(3, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
               <StageMetric label="最新阶段" value={currentStage} color="#2563eb" />
               <StageMetric label="当前质量" value={qualityTone.text} color={qualityTone.color} />
               <StageMetric label="最近更新" value={result?.last_update_at ? new Date(result.last_update_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '等待中'} color="#7c3aed" />
@@ -964,7 +975,7 @@ export default function AnalysisPage() {
               ) : null}
               {result?.news_digest?.length ? (
                 <div style={{ marginBottom: 'var(--sp-4)', display: 'grid', gap: 'var(--sp-2)' }}>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>LIVE NEWS DIGEST</div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>实时新闻摘录</div>
                   {result.news_digest.slice(0, 3).map((item) => (
                     <div key={`${item.title}-${item.published_at}`} style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'rgba(255,255,255,0.9)' }}>
                       <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '0.78rem', marginBottom: 4 }}>{item.title}</div>

@@ -7,6 +7,25 @@ export interface SimulationDraft {
   max_rounds: number
   source?: 'analysis' | 'manual'
   source_task_id?: string
+  graph_context?: {
+    graph_id?: string
+    graph_source_mode?: string
+    graph_queries?: string[]
+    graph_facts?: string[]
+    graph_edges?: Array<{
+      source?: string
+      target?: string
+      type?: string
+      fact?: string
+      weight?: number
+    }>
+    graph_nodes?: Array<{
+      id?: string
+      name?: string
+      type?: string
+      summary?: string
+    }>
+  }
   country_context?: {
     iso: string
     country_name: string

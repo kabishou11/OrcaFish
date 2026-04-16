@@ -4,12 +4,15 @@ import GraphPanel from './GraphPanel'
 import { useSimulationDraftStore, type SimulationDraft } from '../../stores/simulationDraftStore'
 import WorkflowGuide, { type WorkflowGuideStep } from '../WorkflowGuide'
 import CountryWorkbenchCard from '../CountryWorkbenchCard'
+import useViewportMatch from '../../hooks/useViewportMatch'
 
 
 interface SimulationRun {
   run_id: string; status: string; rounds_completed: number; convergence_achieved: boolean;
   final_states?: Array<{ id: string; position: [number, number]; belief: number; influence: number }>;
   duration_ms?: number; created_at?: string; started_at?: string | null; max_rounds?: number;
+  country_context?: CountryContextDraftSummary | null;
+  graph_context?: DraftGraphContextSummary | null;
 }
 
 // ── KG types for local state ─────────────────────────────────────────────────
@@ -25,12 +28,38 @@ interface SimRunStatus {
 interface GraphPayload {
   nodes: KGNode[]
   edges: KGLink[]
+  graph_source_mode?: string
+  graph_entity_types?: string[]
+  graph_synced_at?: string | null
 }
 
-function normalizeGraphPayload(data?: { nodes?: KGNode[]; edges?: KGLink[] } | null): GraphPayload {
+interface DraftGraphContextSummary {
+  graph_id?: string
+  graph_source_mode?: string
+  graph_queries?: string[]
+  graph_facts?: string[]
+  graph_edges?: Array<{
+    source?: string
+    target?: string
+    type?: string
+    fact?: string
+    weight?: number
+  }>
+  graph_nodes?: Array<{
+    id?: string
+    name?: string
+    type?: string
+    summary?: string
+  }>
+}
+
+function normalizeGraphPayload(data?: { nodes?: KGNode[]; edges?: KGLink[]; graph_source_mode?: string; graph_entity_types?: string[]; graph_synced_at?: string | null } | null): GraphPayload {
   return {
     nodes: Array.isArray(data?.nodes) ? data.nodes : [],
     edges: Array.isArray(data?.edges) ? data.edges : [],
+    graph_source_mode: typeof data?.graph_source_mode === 'string' ? data.graph_source_mode : undefined,
+    graph_entity_types: Array.isArray(data?.graph_entity_types) ? data.graph_entity_types : undefined,
+    graph_synced_at: typeof data?.graph_synced_at === 'string' ? data.graph_synced_at : null,
   }
 }
 
@@ -324,10 +353,12 @@ function ReportViewer({
   runId,
   onClose,
   countryContext,
+  graphContext,
 }: {
   runId: string
   onClose: () => void
   countryContext?: CountryContextDraftSummary | null
+  graphContext?: DraftGraphContextSummary | null
 }) {
   const [report, setReport] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -405,6 +436,14 @@ function ReportViewer({
     { label: '信号', value: countryContext?.signal_count ?? 0 },
     { label: '焦点', value: countryContext?.focal_count ?? 0 },
   ]
+  const graphMetricItems = [
+    { label: '检索词', value: graphContext?.graph_queries?.length ?? 0 },
+    { label: '事实', value: graphContext?.graph_facts?.length ?? 0 },
+    { label: '关系', value: graphContext?.graph_edges?.length ?? 0 },
+    { label: '节点', value: graphContext?.graph_nodes?.length ?? 0 },
+  ]
+  const topInheritedEdges = (graphContext?.graph_edges ?? []).slice(0, 3)
+  const topInheritedNodes = (graphContext?.graph_nodes ?? []).slice(0, 3)
 
   return (
     <div className="report-drawer-overlay" onClick={onClose}>
@@ -464,6 +503,34 @@ function ReportViewer({
             </div>
           </div>
         ) : null}
+        {graphContext && (
+          <div style={{
+            padding: '10px 16px',
+            borderBottom: '1px solid var(--border)',
+            background: 'linear-gradient(135deg, rgba(124,58,237,0.06), rgba(255,255,255,0.98))',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}>
+            <div>
+              <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 4 }}>
+                研判图谱起点
+              </div>
+              <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                {graphContext.graph_source_mode || '等待图谱校准'}{graphContext.graph_id ? ` · ${graphContext.graph_id}` : ''}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {graphMetricItems.map((item) => (
+                <span key={item.label} style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.05)', border: '1px solid rgba(124,58,237,0.1)' }}>
+                  {item.label} {item.value}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Body: sidebar + content */}
         <div className="report-drawer-body">
@@ -505,6 +572,38 @@ function ReportViewer({
                 </div>
               </div>
             ) : null}
+            {graphContext && (
+              <div style={{
+                margin: '0 0 var(--sp-3)',
+                padding: '10px 12px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid rgba(124,58,237,0.12)',
+                background: 'linear-gradient(135deg, rgba(124,58,237,0.05), rgba(255,255,255,0.96))',
+                display: 'grid',
+                gap: 8,
+              }}>
+                <div>
+                  <div style={{ fontSize: '0.66rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 4 }}>
+                    图谱校准摘要
+                  </div>
+                  <div style={{ fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                    {graphContext.graph_source_mode || '等待图谱校准'}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {graphMetricItems.map((item) => (
+                    <span key={item.label} style={{ fontSize: '0.62rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.05)', border: '1px solid rgba(124,58,237,0.1)' }}>
+                      {item.label} {item.value}
+                    </span>
+                  ))}
+                </div>
+                {graphContext.graph_queries?.length ? (
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                    检索词：{graphContext.graph_queries.slice(0, 3).join('、')}
+                  </div>
+                ) : null}
+              </div>
+            )}
             {loading ? (
               <div style={{ display: 'flex', justifyContent: 'center', padding: 'var(--sp-6)' }}>
                 <div className="spinner" />
@@ -550,7 +649,7 @@ function ReportViewer({
                     padding: '14px 16px',
                   }}>
                     <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.08em', marginBottom: 8 }}>
-                      OBSERVATION PACKAGE CONTEXT
+                      观察包上下文
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                       <div>
@@ -597,6 +696,88 @@ function ReportViewer({
                     ) : null}
                   </div>
                 ) : null}
+                {graphContext && (
+                  <div style={{
+                    border: '1px solid rgba(124,58,237,0.12)',
+                    borderRadius: 'var(--radius)',
+                    background: 'linear-gradient(135deg, rgba(124,58,237,0.05), rgba(255,255,255,0.98))',
+                    padding: '14px 16px',
+                  }}>
+                    <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.08em', marginBottom: 8 }}>
+                      继承的图谱校准
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                      <div>
+                        <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                          这份报告沿着研判图谱校准继续展开
+                        </div>
+                        <div style={{ marginTop: 4, fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                          继承的图谱检索词、事实、关系和节点会作为未来预测的结构化起点，和报告正文里的图谱事实校准一起对照阅读。
+                        </div>
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textAlign: 'right' }}>
+                        <div>图谱来源</div>
+                        <div style={{ marginTop: 4, color: 'var(--text-primary)', fontWeight: 700 }}>
+                          {graphContext.graph_source_mode || '等待图谱校准'}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {graphMetricItems.map((item) => (
+                        <span key={item.label} style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.05)', border: '1px solid rgba(124,58,237,0.1)' }}>
+                          {item.label} {item.value}
+                        </span>
+                      ))}
+                    </div>
+                    {graphContext.graph_facts?.length ? (
+                      <div style={{ marginTop: 10, fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.75 }}>
+                        <strong style={{ color: 'var(--text-primary)' }}>继承事实：</strong>{graphContext.graph_facts.slice(0, 2).join('；')}
+                      </div>
+                    ) : null}
+                    {(topInheritedEdges.length > 0 || topInheritedNodes.length > 0) ? (
+                      <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
+                            继承关系
+                          </div>
+                          {topInheritedEdges.length ? topInheritedEdges.map((edge, index) => (
+                            <div key={`${edge.source || 'src'}-${edge.target || 'tgt'}-${index}`} style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(124,58,237,0.1)', background: 'rgba(255,255,255,0.92)' }}>
+                              <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
+                                {(edge.source || '未知节点')} → {(edge.target || '未知节点')}
+                              </div>
+                              <div style={{ fontSize: '0.68rem', color: '#7c3aed', marginBottom: 4 }}>{edge.type || 'related_to'}</div>
+                              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                {edge.fact || '该关系从议题研判图谱校准阶段继承而来。'}
+                              </div>
+                            </div>
+                          )) : (
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>还没有继承到关系结构。</div>
+                          )}
+                        </div>
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
+                            继承节点
+                          </div>
+                          {topInheritedNodes.length ? topInheritedNodes.map((node, index) => (
+                            <div key={`${node.id || node.name || 'node'}-${index}`} style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(124,58,237,0.1)', background: 'rgba(255,255,255,0.92)' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+                                <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                                  {node.name || node.id || '未命名节点'}
+                                </div>
+                                <div style={{ fontSize: '0.66rem', color: '#16a34a' }}>{node.type || '图谱节点'}</div>
+                              </div>
+                              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                {node.summary || '该节点从议题研判图谱校准阶段继承而来。'}
+                              </div>
+                            </div>
+                          )) : (
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>还没有继承到节点结构。</div>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
                 <div
                   className="report-body"
                   dangerouslySetInnerHTML={{ __html: sanitizedReport }}
@@ -651,11 +832,18 @@ type SimulationDraftWithCountryContext = SimulationDraft & {
   summary?: CountryContextDraftSummary
   country?: CountryContextDraftSummary
   source_country?: CountryContextDraftSummary
+  graph_context?: DraftGraphContextSummary
+  graphContext?: DraftGraphContextSummary
+  graph_summary?: DraftGraphContextSummary
+  source_graph?: DraftGraphContextSummary
 }
 
 const RUNS_COLLAPSED_LIMIT = 6
 
 export default function SimulationPage() {
+  const isCompact = useViewportMatch(1360)
+  const isMedium = useViewportMatch(1160)
+  const isNarrow = useViewportMatch(860)
   const draft = useSimulationDraftStore((s) => s.draft)
   const clearDraft = useSimulationDraftStore((s) => s.clearDraft)
   const [runs, setRuns] = useState<SimulationRun[]>([])
@@ -677,17 +865,34 @@ export default function SimulationPage() {
   const [graphData, setGraphData] = useState<GraphPayload | null>(null)
   const [graphLoading, setGraphLoading] = useState(false)
   const [graphRefreshKey, setGraphRefreshKey] = useState(0)
+  const [graphFocusRequest, setGraphFocusRequest] = useState<{
+    kind: 'node' | 'edge'
+    nodeId?: string
+    edgeId?: string
+    requestId: number
+  } | null>(null)
+  const [persistedCountryContext, setPersistedCountryContext] = useState<CountryContextDraftSummary | null>(null)
+  const [persistedGraphContext, setPersistedGraphContext] = useState<DraftGraphContextSummary | null>(null)
   const graphSignatureRef = useRef('')
   const lastGraphRunIdRef = useRef<string | null>(null)
   const lastGraphRefreshKeyRef = useRef(0)
   const draftPayload = draft as SimulationDraftWithCountryContext | null
-  const draftCountryContext =
+  const incomingCountryContext =
     draftPayload?.country_context ??
     draftPayload?.countryContext ??
     draftPayload?.context ??
     draftPayload?.summary ??
     draftPayload?.country ??
     draftPayload?.source_country
+  const incomingGraphContext =
+    draftPayload?.graph_context ??
+    draftPayload?.graphContext ??
+    draftPayload?.graph_summary ??
+    draftPayload?.source_graph
+  const runCountryContext = (selectedRun?.country_context as CountryContextDraftSummary | null | undefined) ?? null
+  const runGraphContext = (selectedRun?.graph_context as DraftGraphContextSummary | null | undefined) ?? null
+  const draftCountryContext = incomingCountryContext ?? persistedCountryContext ?? runCountryContext
+  const draftGraphContext = incomingGraphContext ?? persistedGraphContext ?? runGraphContext
 
   const hasCountryContext = Boolean(draftCountryContext?.iso)
   const draftCountryName = draftCountryContext?.country_name || draftCountryContext?.name || draftCountryContext?.iso
@@ -707,6 +912,23 @@ export default function SimulationPage() {
       max_rounds: draft.max_rounds || prev.max_rounds,
     }))
   }, [draft])
+
+  useEffect(() => {
+    if (incomingCountryContext?.iso) {
+      setPersistedCountryContext(incomingCountryContext)
+    }
+  }, [incomingCountryContext])
+
+  useEffect(() => {
+    if (incomingGraphContext && (
+      incomingGraphContext.graph_id
+      || incomingGraphContext.graph_facts?.length
+      || incomingGraphContext.graph_edges?.length
+      || incomingGraphContext.graph_nodes?.length
+    )) {
+      setPersistedGraphContext(incomingGraphContext)
+    }
+  }, [incomingGraphContext])
 
   // Fetch graph data when selected run changes or prediction meaningfully advances
   useEffect(() => {
@@ -914,6 +1136,8 @@ export default function SimulationPage() {
           seed_content: config.seed_content,
           simulation_requirement: config.simulation_requirement || `分析并预测以下议题的演化趋势：${config.seed_content}`,
           max_rounds: config.max_rounds,
+          country_context: draftCountryContext ?? undefined,
+          graph_context: draftGraphContext ?? undefined,
         }),
       })
       if (!res.ok) throw new Error('创建失败')
@@ -988,6 +1212,55 @@ export default function SimulationPage() {
   const progress = selectedRun?.status === 'running' && selectedRun?.rounds_completed
     ? Math.min((selectedRun.rounds_completed / totalRounds) * 100, 100)
     : selectedRun?.status === 'completed' ? 100 : 0
+  const topGraphRelations = useMemo(() => {
+    const edges = graphData?.edges ?? []
+    return edges
+      .map((edge) => ({
+        id: [
+          String((edge as unknown as Record<string, unknown>).source_node_uuid ?? edge.source ?? ''),
+          String((edge as unknown as Record<string, unknown>).target_node_uuid ?? edge.target ?? ''),
+          String(edge.type ?? edge.name ?? ''),
+          String((edge as unknown as Record<string, unknown>).fact ?? ''),
+        ].join('|'),
+        source: String((edge as unknown as Record<string, unknown>).source_name ?? edge.source ?? '未知节点'),
+        target: String((edge as unknown as Record<string, unknown>).target_name ?? edge.target ?? '未知节点'),
+        relation: String(edge.name || edge.type || '关联'),
+        fact: String((edge as unknown as Record<string, unknown>).fact ?? ''),
+        weight: Number(edge.weight ?? 0),
+        sourceId: String((edge as unknown as Record<string, unknown>).source_node_uuid ?? edge.source ?? ''),
+        targetId: String((edge as unknown as Record<string, unknown>).target_node_uuid ?? edge.target ?? ''),
+      }))
+      .sort((a, b) => b.weight - a.weight || a.relation.localeCompare(b.relation))
+      .slice(0, 5)
+  }, [graphData])
+  const topGraphNodes = useMemo(() => {
+    const nodes = graphData?.nodes ?? []
+    return nodes
+      .map((node) => {
+        const props = (node.properties ?? {}) as Record<string, unknown>
+        const summary = String(props.summary ?? props.content_preview ?? props.role ?? '')
+        return {
+          id: node.id,
+          name: node.name,
+          type: node.type,
+          summary,
+        }
+      })
+      .filter((node) => ['Actor', 'Region', 'Concept', 'Episode', 'Platform'].includes(node.type))
+      .slice(0, 6)
+  }, [graphData])
+  const graphCalibrationSummary = useMemo(() => {
+    if (!draftGraphContext) return null
+    return {
+      sourceMode: draftGraphContext.graph_source_mode || 'waiting',
+      queryCount: draftGraphContext.graph_queries?.length ?? 0,
+      factCount: draftGraphContext.graph_facts?.length ?? 0,
+      edgeCount: draftGraphContext.graph_edges?.length ?? 0,
+      nodeCount: draftGraphContext.graph_nodes?.length ?? 0,
+      topFacts: (draftGraphContext.graph_facts ?? []).slice(0, 3),
+      topQueries: (draftGraphContext.graph_queries ?? []).slice(0, 4),
+    }
+  }, [draftGraphContext])
   const estimateRemaining = () => {
     if (!selectedRun) return '等待创建预测记录'
     if (selectedRun.status === 'completed' && selectedRun.duration_ms) {
@@ -1032,7 +1305,9 @@ export default function SimulationPage() {
   const rightPaneVisible = viewMode !== 'graph'
   const graphPaneColumns = viewMode === 'graph'
     ? 'minmax(0, 1fr)'
-    : viewMode === 'workbench'
+    : isMedium
+      ? '1fr'
+      : viewMode === 'workbench'
       ? 'minmax(320px, 0.92fr) minmax(320px, 1.08fr)'
       : '240px minmax(0, 1.72fr) 320px'
   const activeModeMeta = {
@@ -1133,7 +1408,7 @@ export default function SimulationPage() {
       </div>
 
       <WorkflowGuide
-        eyebrow="FUTURE FORECAST FLOW"
+        eyebrow="未来预测流程"
         title="先建记录，再启动预测，再读未来路径"
         description="先把议题输入固化成预测记录，再启动推演，随后结合图谱、行动流和报告持续检查未来路径。"
         steps={workflowSteps}
@@ -1157,7 +1432,7 @@ export default function SimulationPage() {
 
       {/* ── Control Bar ─────────────────────────────────────────── */}
       <div className="panel" style={{ padding: 'var(--sp-4) var(--sp-5)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--sp-4)' }}>
+        <div style={{ display: 'flex', alignItems: isNarrow ? 'stretch' : 'center', justifyContent: 'space-between', gap: 'var(--sp-4)', flexWrap: 'wrap' }}>
           {/* Left: selected run info */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', minWidth: 0 }}>
             {selectedRun ? (
@@ -1253,7 +1528,7 @@ export default function SimulationPage() {
               paddingTop: 'var(--sp-4)',
               borderTop: '1px solid var(--border)',
               display: 'grid',
-              gridTemplateColumns: hasCountryContext ? '1.1fr 0.95fr 0.95fr 120px' : '1.2fr 1fr 120px',
+              gridTemplateColumns: isNarrow ? '1fr' : isCompact ? '1.1fr 1fr' : hasCountryContext ? '1.1fr 0.95fr 0.95fr 120px' : '1.2fr 1fr 120px',
               gap: 'var(--sp-3)',
               alignItems: 'center',
             }}>
@@ -1335,7 +1610,7 @@ export default function SimulationPage() {
       </div>
 
       {/* ── Workflow Steps ─────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : isCompact ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
         {[
           {
             key: 'step-1',
@@ -1404,7 +1679,7 @@ export default function SimulationPage() {
       </div>
 
       {/* ── Main Layout: 280px left (controls) | 1fr center (graph) | 300px right (status) ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: graphPaneColumns, gap: 'var(--sp-4)', alignItems: 'start', minHeight: viewMode === 'graph' ? 820 : 780 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: graphPaneColumns, gap: 'var(--sp-4)', alignItems: 'start', minHeight: isMedium ? 'auto' : viewMode === 'graph' ? 820 : 780 }}>
 
         {/* ── Left: Controls + Runs ────────────────────────────────── */}
         {leftPaneVisible && (
@@ -1648,6 +1923,8 @@ export default function SimulationPage() {
                   isSimulating={selectedRun.status === 'running'}
                   onToggleMaximize={() => setViewMode(viewMode === 'graph' ? 'split' : 'graph')}
                   isFullscreen={viewMode === 'graph'}
+                  focusRequest={graphFocusRequest}
+                  onFocusHandled={() => setGraphFocusRequest(null)}
                 />
               ) : (
                 <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 'var(--sp-4)' }}>
@@ -1717,6 +1994,9 @@ export default function SimulationPage() {
                 <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
                   状态 {selectedRun ? getRunStatusLabel(selectedRun.status) : '未选择'}
                 </span>
+                <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.06)', border: '1px solid rgba(124,58,237,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                  图谱 {graphData?.graph_source_mode || '等待校准'}
+                </span>
               </div>
               <div style={{ marginTop: 10, fontSize: '0.7rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
                 建议先处理当前记录与平台态势，再回到图谱主视图核对证据、关系与动作路径。
@@ -1745,6 +2025,62 @@ export default function SimulationPage() {
               analysisLabel="查看预测来源"
             />
           )}
+
+          {graphCalibrationSummary ? (
+            <div className="panel">
+              <div className="panel-header">
+                <span className="panel-title">研判图谱校准</span>
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                  {graphCalibrationSummary.sourceMode}
+                </span>
+              </div>
+              <div className="panel-body" style={{ display: 'grid', gap: 'var(--sp-3)' }}>
+                <div style={{
+                  padding: '12px 14px',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px solid rgba(124,58,237,0.16)',
+                  background: 'linear-gradient(135deg, rgba(124,58,237,0.08), rgba(255,255,255,0.96))',
+                  fontSize: '0.74rem',
+                  color: 'var(--text-secondary)',
+                  lineHeight: 1.7,
+                }}>
+                  这部分来自议题研判阶段的图谱校准结果。你可以把它当作未来预测的结构化起点，用来对照右侧摘要和主图谱里的后续路径演化。
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.06)', border: '1px solid rgba(124,58,237,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                    检索词 {graphCalibrationSummary.queryCount}
+                  </span>
+                  <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                    事实 {graphCalibrationSummary.factCount}
+                  </span>
+                  <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                    关系 {graphCalibrationSummary.edgeCount}
+                  </span>
+                  <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                    节点 {graphCalibrationSummary.nodeCount}
+                  </span>
+                </div>
+                {graphCalibrationSummary.topQueries.length ? (
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                    检索词：{graphCalibrationSummary.topQueries.join('、')}
+                  </div>
+                ) : null}
+                {graphCalibrationSummary.topFacts.length ? (
+                  <div style={{ display: 'grid', gap: 'var(--sp-2)' }}>
+                    {graphCalibrationSummary.topFacts.map((fact, index) => (
+                      <div key={`${fact}-${index}`} style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'rgba(255,255,255,0.92)', fontSize: '0.74rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                        {fact}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                    当前还没有继承到图谱校准事实，后续将继续以未来预测图谱补足。
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
 
           {selectedRun ? (
             <div style={{
@@ -1783,6 +2119,91 @@ export default function SimulationPage() {
                 <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
                   状态 {getRunStatusLabel(selectedRun.status)}
                 </span>
+                <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.06)', border: '1px solid rgba(124,58,237,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                  图谱 {graphData?.graph_source_mode || '等待校准'}
+                </span>
+              </div>
+              {graphData?.graph_entity_types?.length ? (
+                <div style={{ marginTop: 10, fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                  当前图谱类型：{graphData.graph_entity_types.slice(0, 6).join('、')}
+                  {graphData.graph_entity_types.length > 6 ? ` 等 ${graphData.graph_entity_types.length} 类` : ''}
+                </div>
+              ) : null}
+              {graphData?.graph_synced_at ? (
+                <div style={{ marginTop: 6, fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                  最近图谱同步：{new Date(graphData.graph_synced_at).toLocaleString('zh-CN', { hour12: false })}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {selectedRun && (topGraphRelations.length > 0 || topGraphNodes.length > 0) ? (
+            <div className="panel">
+              <div className="panel-header">
+                <span className="panel-title">图谱摘要</span>
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                  {graphData?.graph_source_mode || 'graph'}
+                </span>
+              </div>
+              <div className="panel-body" style={{ display: 'grid', gap: 'var(--sp-3)' }}>
+                <div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 8 }}>
+                    关键关系
+                  </div>
+                  <div style={{ display: 'grid', gap: 'var(--sp-2)' }}>
+                    {topGraphRelations.length ? topGraphRelations.map((edge) => (
+                      <button
+                        key={edge.id}
+                        type="button"
+                        onClick={() => {
+                          setViewMode('split')
+                          setGraphFocusRequest({ kind: 'edge', edgeId: edge.id, requestId: Date.now() })
+                        }}
+                        style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'rgba(255,255,255,0.92)', textAlign: 'left', cursor: 'pointer' }}
+                      >
+                        <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '0.76rem', marginBottom: 4 }}>
+                          {edge.source} → {edge.target}
+                        </div>
+                        <div style={{ color: '#7c3aed', fontSize: '0.68rem', marginBottom: 4 }}>{edge.relation}</div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                          {edge.fact || '当前已命中这条结构关系，建议在图谱主视图里继续核对其上下游路径。'}
+                        </div>
+                        <div style={{ marginTop: 8, fontSize: '0.66rem', color: 'var(--accent)' }}>点击后在主图谱中定位这条关系</div>
+                      </button>
+                    )) : (
+                      <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>等待图谱关系进一步生成。</div>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 8 }}>
+                    关键节点
+                  </div>
+                  <div style={{ display: 'grid', gap: 'var(--sp-2)' }}>
+                    {topGraphNodes.length ? topGraphNodes.map((node) => (
+                      <button
+                        key={node.id}
+                        type="button"
+                        onClick={() => {
+                          setViewMode('split')
+                          setGraphFocusRequest({ kind: 'node', nodeId: node.id, requestId: Date.now() })
+                        }}
+                        style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'rgba(255,255,255,0.92)', textAlign: 'left', cursor: 'pointer' }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                          <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '0.76rem' }}>{node.name}</div>
+                          <div style={{ fontSize: '0.66rem', color: '#16a34a' }}>{node.type}</div>
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                          {node.summary || '该节点已经出现在当前未来路径里，建议在图谱主视图中继续观察它和其他关系的连接。'}
+                        </div>
+                        <div style={{ marginTop: 8, fontSize: '0.66rem', color: 'var(--accent)' }}>点击后在主图谱中定位该节点</div>
+                      </button>
+                    )) : (
+                      <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>等待关键节点摘要生成。</div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           ) : null}
@@ -1892,7 +2313,7 @@ export default function SimulationPage() {
 
       {/* Report Viewer Drawer */}
       {showReport && selectedRun && (
-        <ReportViewer runId={selectedRun.run_id} onClose={() => setShowReport(false)} countryContext={draftCountryContext} />
+        <ReportViewer runId={selectedRun.run_id} onClose={() => setShowReport(false)} countryContext={draftCountryContext} graphContext={draftGraphContext} />
       )}
     </div>
   )
@@ -2046,6 +2467,40 @@ const reportDrawerCSS = `
     min-height: 200px;
     padding: var(--sp-8);
     text-align: center;
+  }
+
+  @media (max-width: 960px) {
+    .report-drawer-header {
+      padding: var(--sp-3) var(--sp-4);
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+
+    .report-drawer-body {
+      flex-direction: column;
+    }
+
+    .report-section-nav {
+      width: 100%;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+      max-height: 220px;
+    }
+
+    .report-content-area {
+      padding: var(--sp-4);
+    }
+  }
+
+  @media (max-width: 640px) {
+    .report-content-area {
+      padding: var(--sp-3);
+    }
+
+    .report-section-btn {
+      padding: 9px var(--sp-3);
+      font-size: 0.76rem;
+    }
   }
 
   @keyframes fade-in {

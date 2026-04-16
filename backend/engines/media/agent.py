@@ -462,7 +462,6 @@ class AnspireSearchAgent(DeepSearchAgent):
         logger.info(f"搜索工具集: AnspireSearch")
 
     def execute_search_tool(self, tool_name: str, query: str, **kwargs) -> AnspireResponse:
-        # TODO: 使用Anspire搜索工具执行搜索
         """
         执行指定的搜索工具
         

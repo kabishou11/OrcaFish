@@ -7,6 +7,7 @@ import {
 } from '../../stores/intelligenceStore'
 import { useSimulationDraftStore } from '../../stores/simulationDraftStore'
 import WorkflowGuide, { type WorkflowGuideStep } from '../WorkflowGuide'
+import useViewportMatch from '../../hooks/useViewportMatch'
 
 const CountryWorkbenchCard = lazy(() => import('../CountryWorkbenchCard'))
 const FlatWorldMap = lazy(() => import('./FlatWorldMap'))
@@ -378,6 +379,9 @@ function CountryCardFallback() {
 }
 
 export default function Intelligence() {
+  const isCompact = useViewportMatch(1500)
+  const isMedium = useViewportMatch(1180)
+  const isNarrow = useViewportMatch(860)
   const navigate = useNavigate()
   const [signals, setSignals] = useState<Signal[]>([])
   const [ciiScores, setCiiScores] = useState<CIIScore[]>([])
@@ -869,17 +873,19 @@ export default function Intelligence() {
         </div>
       </div>
 
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0, flexDirection: isMedium ? 'column' : 'row' }}>
         <div
           style={{
-            width: 280,
+            width: isMedium ? '100%' : 280,
             flexShrink: 0,
             background: 'rgba(255,255,255,0.94)',
-            borderRight: '1px solid var(--border)',
+            borderRight: isMedium ? 'none' : '1px solid var(--border)',
+            borderBottom: isMedium ? '1px solid var(--border)' : 'none',
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
             backdropFilter: 'blur(8px)',
+            maxHeight: isMedium ? 320 : 'none',
           }}
         >
           <div style={{ padding: '12px', borderBottom: '1px solid var(--border)', background: 'rgba(248,250,252,0.92)' }}>
@@ -973,7 +979,7 @@ export default function Intelligence() {
           </div>
         </div>
 
-        <div style={{ flex: 1, minWidth: 0, position: 'relative', overflow: 'hidden', background: 'linear-gradient(180deg, #f8fbff, #edf5fc)' }}>
+        <div style={{ flex: 1, minWidth: 0, position: 'relative', overflow: 'hidden', background: 'linear-gradient(180deg, #f8fbff, #edf5fc)', minHeight: isMedium ? 620 : 0 }}>
           <Suspense fallback={<MapWorkbenchFallback />}>
             <FlatWorldMap
               ciiScores={ciiScores}
@@ -994,7 +1000,7 @@ export default function Intelligence() {
               left: 14,
               display: 'grid',
               gap: 10,
-              width: 'min(360px, calc(100% - 28px))',
+              width: isNarrow ? 'calc(100% - 28px)' : 'min(360px, calc(100% - 28px))',
               zIndex: 6,
             }}
           >
@@ -1017,7 +1023,7 @@ export default function Intelligence() {
               </div>
               {wmStatus.latest_event ? (
                 <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(22,163,74,0.18)', background: 'linear-gradient(135deg, rgba(22,163,74,0.06), rgba(255,255,255,0.98))' }}>
-                  <div style={{ fontSize: '0.66rem', color: '#15803d', fontFamily: 'var(--font-mono)', letterSpacing: '0.08em' }}>LATEST PUSH</div>
+                  <div style={{ fontSize: '0.66rem', color: '#15803d', fontFamily: 'var(--font-mono)', letterSpacing: '0.08em' }}>最新推送</div>
                   <div style={{ marginTop: 4, fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.55 }}>
                     {wmStatus.latest_event.title}
                   </div>
@@ -1154,14 +1160,16 @@ export default function Intelligence() {
 
         <div
           style={{
-            width: 380,
+            width: isMedium ? '100%' : isCompact ? 340 : 380,
             flexShrink: 0,
             background: 'rgba(255,255,255,0.94)',
-            borderLeft: '1px solid var(--border)',
+            borderLeft: isMedium ? 'none' : '1px solid var(--border)',
+            borderTop: isMedium ? '1px solid var(--border)' : 'none',
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
             backdropFilter: 'blur(8px)',
+            maxHeight: isMedium ? 520 : 'none',
           }}
         >
           <div style={{ padding: '12px', borderBottom: '1px solid var(--border)', background: 'rgba(248,250,252,0.92)' }}>
@@ -1210,7 +1218,7 @@ export default function Intelligence() {
                 <div style={{ border: '1px solid rgba(37,99,235,0.14)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', background: 'linear-gradient(135deg, rgba(37,99,235,0.05), rgba(255,255,255,0.96))' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                     <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-                      Agent 观察焦点
+                      智能体观察焦点
                     </div>
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.64rem', color: 'var(--accent)' }}>
                       {leadFocalPoint.entity_id} · {Math.round(leadFocalPoint.focal_score * 100)}%

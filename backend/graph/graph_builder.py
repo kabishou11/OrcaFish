@@ -136,6 +136,7 @@ class GraphBuilder:
             "node_count": len(nodes),
             "edge_count": len(edges),
             "entity_types": sorted(entity_types),
+            "source_mode": "remote_nodes_edges",
         }
 
     def add_text_batch(self, graph_id: str, text_chunks: list[str]) -> list[str]:
@@ -218,6 +219,219 @@ class GraphBuilder:
         except Exception:
             pass
         return []
+
+    def _extract_collection(self, payload: Any, keys: tuple[str, ...]) -> list[dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if not isinstance(payload, dict):
+            return []
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+            if isinstance(value, dict):
+                nested = self._extract_collection(value, keys)
+                if nested:
+                    return nested
+        return []
+
+    def _fetch_collection_pages(
+        self,
+        path_candidates: list[str],
+        result_keys: tuple[str, ...],
+        params: Optional[dict[str, Any]] = None,
+        page_size: int = 200,
+        max_pages: int = 8,
+    ) -> list[dict[str, Any]]:
+        if self._mock or not self.base_url:
+            return []
+
+        base_params = dict(params or {})
+        for path in path_candidates:
+            collected: list[dict[str, Any]] = []
+            cursor: Optional[str] = None
+            succeeded = False
+            with httpx.Client(timeout=30) as client:
+                for _ in range(max_pages):
+                    request_params = {**base_params, "limit": page_size}
+                    if cursor:
+                        request_params["cursor"] = cursor
+                        request_params["uuid_cursor"] = cursor
+                    try:
+                        response = client.get(
+                            f"{self.base_url}{path}",
+                            headers=self._headers(),
+                            params=request_params,
+                        )
+                    except Exception:
+                        break
+                    if not response.is_success:
+                        break
+                    succeeded = True
+                    try:
+                        payload = response.json()
+                    except Exception:
+                        break
+                    items = self._extract_collection(payload, result_keys)
+                    if not items:
+                        break
+                    collected.extend(items)
+                    if len(items) < page_size:
+                        break
+                    last_item = items[-1]
+                    cursor = str(
+                        last_item.get("uuid")
+                        or last_item.get("uuid_")
+                        or last_item.get("id")
+                        or ""
+                    ).strip() or None
+                    if not cursor:
+                        break
+            if succeeded and collected:
+                return collected
+        return []
+
+    def _fetch_graph_nodes(self, graph_id: str) -> list[dict[str, Any]]:
+        return self._fetch_collection_pages(
+            path_candidates=[
+                f"/graphs/{graph_id}/nodes",
+                f"/graph/{graph_id}/nodes",
+                f"/group/{graph_id}/nodes",
+                "/nodes",
+            ],
+            result_keys=("nodes", "items", "results", "data"),
+            params={"graph_id": graph_id, "group_id": graph_id},
+        )
+
+    def _fetch_graph_edges(self, graph_id: str) -> list[dict[str, Any]]:
+        return self._fetch_collection_pages(
+            path_candidates=[
+                f"/graphs/{graph_id}/edges",
+                f"/graph/{graph_id}/edges",
+                f"/group/{graph_id}/edges",
+                "/edges",
+            ],
+            result_keys=("edges", "items", "results", "data"),
+            params={"graph_id": graph_id, "group_id": graph_id},
+        )
+
+    def _normalize_remote_node(self, raw_node: dict[str, Any]) -> Optional[dict[str, Any]]:
+        node_id = str(raw_node.get("uuid") or raw_node.get("uuid_") or raw_node.get("id") or "").strip()
+        if not node_id:
+            return None
+        labels_raw = raw_node.get("labels") or raw_node.get("types") or raw_node.get("label") or []
+        if isinstance(labels_raw, str):
+            labels = [labels_raw]
+        elif isinstance(labels_raw, list):
+            labels = [str(label) for label in labels_raw if str(label).strip()]
+        else:
+            labels = []
+        attributes = raw_node.get("attributes")
+        if not isinstance(attributes, dict):
+            attributes = {}
+        summary = str(
+            raw_node.get("summary")
+            or raw_node.get("fact")
+            or raw_node.get("content")
+            or attributes.get("summary")
+            or attributes.get("content_preview")
+            or ""
+        ).strip()
+        return {
+            "uuid": node_id,
+            "name": str(raw_node.get("name") or raw_node.get("title") or raw_node.get("label") or node_id).strip(),
+            "labels": labels or ["Entity"],
+            "summary": summary,
+            "attributes": attributes,
+            "created_at": raw_node.get("created_at") or raw_node.get("valid_at") or raw_node.get("timestamp"),
+        }
+
+    def _normalize_remote_edge(self, raw_edge: dict[str, Any], node_name_map: dict[str, str]) -> Optional[dict[str, Any]]:
+        source = str(
+            raw_edge.get("source_node_uuid")
+            or raw_edge.get("source_uuid")
+            or raw_edge.get("source")
+            or raw_edge.get("source_id")
+            or ""
+        ).strip()
+        target = str(
+            raw_edge.get("target_node_uuid")
+            or raw_edge.get("target_uuid")
+            or raw_edge.get("target")
+            or raw_edge.get("target_id")
+            or ""
+        ).strip()
+        if not source or not target or source == target:
+            return None
+        edge_type = str(raw_edge.get("fact_type") or raw_edge.get("type") or raw_edge.get("name") or "related_to").strip()
+        attributes = raw_edge.get("attributes")
+        if not isinstance(attributes, dict):
+            attributes = {}
+        return {
+            "uuid": str(raw_edge.get("uuid") or raw_edge.get("id") or f"{edge_type}::{source}::{target}"),
+            "name": str(raw_edge.get("name") or edge_type),
+            "fact": str(raw_edge.get("fact") or raw_edge.get("summary") or raw_edge.get("description") or edge_type),
+            "fact_type": edge_type,
+            "source_node_uuid": source,
+            "target_node_uuid": target,
+            "source_node_name": str(raw_edge.get("source_node_name") or node_name_map.get(source) or source),
+            "target_node_name": str(raw_edge.get("target_node_name") or node_name_map.get(target) or target),
+            "attributes": attributes,
+            "created_at": raw_edge.get("created_at") or raw_edge.get("timestamp"),
+            "valid_at": raw_edge.get("valid_at"),
+            "invalid_at": raw_edge.get("invalid_at"),
+            "expired_at": raw_edge.get("expired_at"),
+            "episodes": raw_edge.get("episodes") if isinstance(raw_edge.get("episodes"), list) else [],
+        }
+
+    def _graph_data_from_nodes_and_edges(
+        self,
+        graph_id: str,
+        raw_nodes: list[dict[str, Any]],
+        raw_edges: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        nodes: list[dict[str, Any]] = []
+        node_map: dict[str, dict[str, Any]] = {}
+        entity_types: set[str] = set()
+        for raw_node in raw_nodes:
+            normalized = self._normalize_remote_node(raw_node)
+            if not normalized:
+                continue
+            node_id = str(normalized["uuid"])
+            if node_id in node_map:
+                continue
+            node_map[node_id] = normalized
+            nodes.append(normalized)
+            for label in normalized.get("labels") or []:
+                label_text = str(label)
+                if label_text not in {"Entity", "Node", "Episode"}:
+                    entity_types.add(label_text)
+
+        node_name_map = {node_id: str(node.get("name") or node_id) for node_id, node in node_map.items()}
+        edges: list[dict[str, Any]] = []
+        seen_edges: set[tuple[str, str, str]] = set()
+        for raw_edge in raw_edges:
+            normalized = self._normalize_remote_edge(raw_edge, node_name_map)
+            if not normalized:
+                continue
+            edge_key = (
+                str(normalized["source_node_uuid"]),
+                str(normalized["target_node_uuid"]),
+                str(normalized["fact_type"]),
+            )
+            if edge_key in seen_edges:
+                continue
+            seen_edges.add(edge_key)
+            edges.append(normalized)
+
+        return {
+            "graph_id": graph_id,
+            "nodes": nodes,
+            "edges": edges,
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "entity_types": sorted(entity_types),
+        }
 
     def _extract_entities(self, text: str) -> list[str]:
         matches = re.findall(r"[\u4e00-\u9fff]{2,10}|[A-Za-z][A-Za-z0-9\-]{2,}", text or "")
@@ -353,6 +567,48 @@ class GraphBuilder:
         }
 
     def get_graph_data(self, graph_id: str) -> dict[str, Any]:
+        raw_nodes = self._fetch_graph_nodes(graph_id)
+        raw_edges = self._fetch_graph_edges(graph_id)
+        if raw_nodes or raw_edges:
+            remote_graph = self._graph_data_from_nodes_and_edges(graph_id, raw_nodes, raw_edges)
+            snapshot = GraphSnapshotStore.load(graph_id)
+            if snapshot and snapshot.get("nodes"):
+                existing_node_ids = {str(node.get("uuid")) for node in remote_graph["nodes"] if isinstance(node, dict)}
+                existing_edge_ids = {
+                    (
+                        str(edge.get("source_node_uuid") or ""),
+                        str(edge.get("target_node_uuid") or ""),
+                        str(edge.get("fact_type") or edge.get("name") or ""),
+                    )
+                    for edge in remote_graph["edges"]
+                    if isinstance(edge, dict)
+                }
+                for node in snapshot.get("nodes") or []:
+                    node_uuid = str(node.get("uuid") or "")
+                    if node_uuid and node_uuid not in existing_node_ids:
+                        remote_graph["nodes"].append(node)
+                for edge in snapshot.get("edges") or []:
+                    edge_key = (
+                        str(edge.get("source_node_uuid") or ""),
+                        str(edge.get("target_node_uuid") or ""),
+                        str(edge.get("fact_type") or edge.get("name") or ""),
+                    )
+                    if edge_key not in existing_edge_ids:
+                        remote_graph["edges"].append(edge)
+                remote_graph["node_count"] = len(remote_graph["nodes"])
+                remote_graph["edge_count"] = len(remote_graph["edges"])
+                remote_graph["entity_types"] = sorted(
+                    {
+                        str(label)
+                        for node in remote_graph["nodes"]
+                        if isinstance(node, dict)
+                        for label in (node.get("labels") or [])
+                        if str(label) not in {"Entity", "Node", "Episode"}
+                    }
+                )
+                remote_graph["source_mode"] = "remote_nodes_edges+snapshot"
+            return remote_graph
+
         episodes = self._fetch_episodes(graph_id)
         if episodes:
             remote_data = self._episode_to_graph_data(graph_id, episodes)
@@ -391,9 +647,13 @@ class GraphBuilder:
                         if str(label) not in {"Entity", "Node", "Episode"}
                     }
                 )
+                remote_data["source_mode"] = "episodes+snapshot"
+            else:
+                remote_data["source_mode"] = "episodes"
             return remote_data
         snapshot = GraphSnapshotStore.load(graph_id)
         if snapshot:
+            snapshot.setdefault("source_mode", "snapshot")
             return snapshot
         return {
             "graph_id": graph_id,
@@ -402,6 +662,7 @@ class GraphBuilder:
             "node_count": 0,
             "edge_count": 0,
             "entity_types": [],
+            "source_mode": "empty",
         }
 
     def get_graph_info(self, graph_id: str) -> GraphInfo:

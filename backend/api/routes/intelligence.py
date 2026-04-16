@@ -20,6 +20,7 @@ _wm_last_poll: Optional[datetime] = None
 _wm_focal_points: List[FocalPoint] = []
 _wm_monitor_snapshot_cache: Optional[dict] = None
 _wm_cii_payload_cache: Optional[dict] = None
+_WM_AGENT_TIMEOUT_SECONDS = 8.0
 
 
 def _normalize_iso(iso: str) -> str:
@@ -338,22 +339,26 @@ async def _run_monitor_agent() -> None:
             model=settings.query_llm.model,
             provider=settings.query_llm.provider,
             reasoning_split=settings.query_llm.reasoning_split,
-            timeout=min(settings.query_llm.timeout, 120),
+            timeout=min(settings.query_llm.timeout, 20),
+            max_retries=1,
         )
-        result = await llm.invoke_json(
-            system_prompt="你是全球风险监控台的实时情报值班官。你的任务是从新闻和信号里提炼出最值得盯的焦点对象。",
-            user_prompt=(
-                "请根据以下监控新闻和国家信号，提炼 3 个最重要的焦点对象，返回 JSON：\n"
-                "{\n"
-                '  "focal_points": [\n'
-                '    {"entity_id":"IR","entity_type":"country","focal_score":0.88,"urgency":"watch|high|critical","signal_types":["military"],"top_headlines":["..."],"narrative":"一句到两句说明为什么现在值得追"}\n'
-                "  ]\n"
-                "}\n\n"
-                "要求：必须基于已有素材，不要编造来源；narrative 要像监控台简报；只输出 JSON。\n\n"
-                f"新闻列表：\n{prompt_news}\n\n"
-                f"国家信号：\n{prompt_clusters}"
+        result = await asyncio.wait_for(
+            llm.invoke_json(
+                system_prompt="你是全球风险监控台的实时情报值班官。你的任务是从新闻和信号里提炼出最值得盯的焦点对象。",
+                user_prompt=(
+                    "请根据以下监控新闻和国家信号，提炼 3 个最重要的焦点对象，返回 JSON：\n"
+                    "{\n"
+                    '  "focal_points": [\n'
+                    '    {"entity_id":"IR","entity_type":"country","focal_score":0.88,"urgency":"watch|high|critical","signal_types":["military"],"top_headlines":["..."],"narrative":"一句到两句说明为什么现在值得追"}\n'
+                    "  ]\n"
+                    "}\n\n"
+                    "要求：必须基于已有素材，不要编造来源；narrative 要像监控台简报；只输出 JSON。\n\n"
+                    f"新闻列表：\n{prompt_news}\n\n"
+                    f"国家信号：\n{prompt_clusters}"
+                ),
+                temperature=0.2,
             ),
-            temperature=0.2,
+            timeout=_WM_AGENT_TIMEOUT_SECONDS,
         )
         points = []
         for item in result.get("focal_points", [])[:3]:
@@ -388,6 +393,19 @@ async def _run_monitor_agent() -> None:
     _wm_focal_points = fallback
 
 
+async def _refresh_world_monitor_once() -> None:
+    global _wm_last_poll
+    _wm_last_poll = datetime.now(UTC)
+    await asyncio.to_thread(_run_monitor_poll_cycle)
+    try:
+        await _run_monitor_agent()
+    except Exception:
+        # _run_monitor_agent already falls back aggressively; this is only a final guard.
+        pass
+    _refresh_monitor_snapshot_cache()
+    _refresh_cii_payload_cache()
+
+
 def _run_monitor_poll_cycle() -> None:
     _signal_aggregator.poll_external_sources()
     _sync_cii_from_signals()
@@ -411,16 +429,12 @@ async def start_wm() -> dict:
     _wm_last_poll = datetime.now(UTC)
     _refresh_monitor_snapshot_cache()
     _refresh_cii_payload_cache()
+    await _refresh_world_monitor_once()
 
     async def poll_loop():
-        global _wm_last_poll
         while _wm_running:
             try:
-                _wm_last_poll = datetime.now(UTC)
-                await asyncio.to_thread(_run_monitor_poll_cycle)
-                await _run_monitor_agent()
-                _refresh_monitor_snapshot_cache()
-                _refresh_cii_payload_cache()
+                await _refresh_world_monitor_once()
             except Exception:
                 pass
             await asyncio.sleep(15)
