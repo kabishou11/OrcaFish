@@ -38,6 +38,18 @@ interface DraftGraphContextSummary {
   graph_source_mode?: string
   graph_queries?: string[]
   graph_facts?: string[]
+  analysis_stage?: string
+  analysis_quality?: string
+  analysis_summary?: string
+  news_digest?: Array<{
+    title?: string
+    summary?: string
+    source?: string
+    country?: string
+    published_at?: string
+    signal_type?: string
+  }>
+  selected_digest?: DraftDigestItem | null
   graph_edges?: Array<{
     source?: string
     target?: string
@@ -52,6 +64,8 @@ interface DraftGraphContextSummary {
     summary?: string
   }>
 }
+
+type DraftDigestItem = NonNullable<DraftGraphContextSummary['news_digest']>[number]
 
 function normalizeGraphPayload(data?: { nodes?: KGNode[]; edges?: KGLink[]; graph_source_mode?: string; graph_entity_types?: string[]; graph_synced_at?: string | null } | null): GraphPayload {
   return {
@@ -354,11 +368,15 @@ function ReportViewer({
   onClose,
   countryContext,
   graphContext,
+  onGraphFocus,
+  onUseDigest,
 }: {
   runId: string
   onClose: () => void
   countryContext?: CountryContextDraftSummary | null
   graphContext?: DraftGraphContextSummary | null
+  onGraphFocus?: (request: { kind: 'node' | 'edge'; nodeId?: string; edgeId?: string }) => void
+  onUseDigest?: (item: DraftDigestItem) => void
 }) {
   const [report, setReport] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -444,6 +462,8 @@ function ReportViewer({
   ]
   const topInheritedEdges = (graphContext?.graph_edges ?? []).slice(0, 3)
   const topInheritedNodes = (graphContext?.graph_nodes ?? []).slice(0, 3)
+  const buildInheritedEdgeFocusId = (edge: NonNullable<DraftGraphContextSummary['graph_edges']>[number]) =>
+    [String(edge.source || ''), String(edge.target || ''), String(edge.type || ''), String(edge.fact || '')].join('|')
 
   return (
     <div className="report-drawer-overlay" onClick={onClose}>
@@ -529,6 +549,11 @@ function ReportViewer({
                 </span>
               ))}
             </div>
+            {graphContext.selected_digest?.title ? (
+              <div style={{ width: '100%', fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                <strong style={{ color: 'var(--text-primary)' }}>当前派生来源：</strong>{graphContext.selected_digest.title}
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -734,6 +759,58 @@ function ReportViewer({
                         <strong style={{ color: 'var(--text-primary)' }}>继承事实：</strong>{graphContext.graph_facts.slice(0, 2).join('；')}
                       </div>
                     ) : null}
+                    {graphContext.analysis_summary ? (
+                      <div style={{ marginTop: 10, fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.75 }}>
+                        <strong style={{ color: 'var(--text-primary)' }}>研判摘要：</strong>{graphContext.analysis_summary}
+                      </div>
+                    ) : null}
+                    {(graphContext.analysis_stage || graphContext.analysis_quality) ? (
+                      <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {graphContext.analysis_stage ? (
+                          <span style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.05)', border: '1px solid rgba(37,99,235,0.1)' }}>
+                            当前阶段 {graphContext.analysis_stage}
+                          </span>
+                        ) : null}
+                        {graphContext.analysis_quality ? (
+                          <span style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.05)', border: '1px solid rgba(22,163,74,0.1)' }}>
+                            当前质量 {graphContext.analysis_quality}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {graphContext.news_digest?.length ? (
+                      <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+                        <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
+                          继承的研判首屏摘要
+                        </div>
+                        {graphContext.news_digest.slice(0, 3).map((item, index) => (
+                          <div key={`${item.title || 'inherited-digest'}-${index}`} style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(124,58,237,0.1)', background: 'rgba(255,255,255,0.92)' }}>
+                            <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                              {item.title || '研判监控摘要'}
+                            </div>
+                            {item.summary ? (
+                              <div style={{ marginTop: 4, fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                                {item.summary}
+                              </div>
+                            ) : null}
+                            <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: '0.64rem', color: 'var(--text-muted)' }}>
+                              {item.source ? <span>{item.source}</span> : null}
+                              {item.country ? <span>{item.country}</span> : null}
+                              {item.signal_type ? <span>{item.signal_type}</span> : null}
+                            </div>
+                            {onUseDigest ? (
+                              <button
+                                type="button"
+                                onClick={() => onUseDigest(item)}
+                                style={{ marginTop: 8, border: 'none', background: 'none', padding: 0, color: 'var(--accent)', fontSize: '0.68rem', cursor: 'pointer', fontWeight: 600 }}
+                              >
+                                带回创建区继续预测
+                              </button>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                     {(topInheritedEdges.length > 0 || topInheritedNodes.length > 0) ? (
                       <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
                         <div style={{ display: 'grid', gap: 8 }}>
@@ -749,6 +826,15 @@ function ReportViewer({
                               <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                                 {edge.fact || '该关系从议题研判图谱校准阶段继承而来。'}
                               </div>
+                              {onGraphFocus ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onGraphFocus({ kind: 'edge', edgeId: buildInheritedEdgeFocusId(edge) })}
+                                  style={{ marginTop: 8, border: 'none', background: 'none', padding: 0, color: 'var(--accent)', fontSize: '0.68rem', cursor: 'pointer', fontWeight: 600 }}
+                                >
+                                  回主图谱定位这条关系
+                                </button>
+                              ) : null}
                             </div>
                           )) : (
                             <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>还没有继承到关系结构。</div>
@@ -769,6 +855,15 @@ function ReportViewer({
                               <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                                 {node.summary || '该节点从议题研判图谱校准阶段继承而来。'}
                               </div>
+                              {onGraphFocus && node.id ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onGraphFocus({ kind: 'node', nodeId: node.id })}
+                                  style={{ marginTop: 8, border: 'none', background: 'none', padding: 0, color: 'var(--accent)', fontSize: '0.68rem', cursor: 'pointer', fontWeight: 600 }}
+                                >
+                                  回主图谱定位该节点
+                                </button>
+                              ) : null}
                             </div>
                           )) : (
                             <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>还没有继承到节点结构。</div>
@@ -873,6 +968,7 @@ export default function SimulationPage() {
   } | null>(null)
   const [persistedCountryContext, setPersistedCountryContext] = useState<CountryContextDraftSummary | null>(null)
   const [persistedGraphContext, setPersistedGraphContext] = useState<DraftGraphContextSummary | null>(null)
+  const seedTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const graphSignatureRef = useRef('')
   const lastGraphRunIdRef = useRef<string | null>(null)
   const lastGraphRefreshKeyRef = useRef(0)
@@ -1183,6 +1279,11 @@ export default function SimulationPage() {
       setStoppingRun(false)
     }
   }
+  const focusGraphFromWorkbench = useCallback((request: { kind: 'node' | 'edge'; nodeId?: string; edgeId?: string }) => {
+    setShowReport(false)
+    setViewMode('split')
+    setGraphFocusRequest({ ...request, requestId: Date.now() })
+  }, [])
 
   const statusBadge = (status: string) => {
     const cls = status === 'completed' ? 'badge-done' : status === 'running' ? 'badge-active' : status === 'failed' ? 'badge-failed' : 'badge-pending'
@@ -1253,14 +1354,55 @@ export default function SimulationPage() {
     if (!draftGraphContext) return null
     return {
       sourceMode: draftGraphContext.graph_source_mode || 'waiting',
+      analysisStage: draftGraphContext.analysis_stage || '等待研判阶段同步',
+      analysisQuality: draftGraphContext.analysis_quality || '等待质量标记',
+      analysisSummary: draftGraphContext.analysis_summary || '当前还没有继承到议题研判摘要。',
+      selectedDigest: draftGraphContext.selected_digest ?? null,
       queryCount: draftGraphContext.graph_queries?.length ?? 0,
       factCount: draftGraphContext.graph_facts?.length ?? 0,
       edgeCount: draftGraphContext.graph_edges?.length ?? 0,
       nodeCount: draftGraphContext.graph_nodes?.length ?? 0,
       topFacts: (draftGraphContext.graph_facts ?? []).slice(0, 3),
       topQueries: (draftGraphContext.graph_queries ?? []).slice(0, 4),
+      topNewsDigest: (draftGraphContext.news_digest ?? []).slice(0, 3),
     }
   }, [draftGraphContext])
+  const describeRunSourceContext = (run: SimulationRun) => {
+    const graphContext = run.graph_context
+    return {
+      stage: graphContext?.analysis_stage || '',
+      quality: graphContext?.analysis_quality || '',
+      summary: graphContext?.analysis_summary || '',
+      digestTitle: graphContext?.selected_digest?.title || graphContext?.news_digest?.[0]?.title || '',
+    }
+  }
+  const handleUseDigestForSeed = useCallback((item: DraftDigestItem) => {
+    const title = String(item.title || '').trim()
+    const summary = String(item.summary || '').trim()
+    const country = String(item.country || draftCountryName || '').trim()
+    const signalType = String(item.signal_type || '').trim()
+    const nextSeed = [title, summary].filter(Boolean).join('\n')
+    const nextRequirementBits = [
+      country ? `围绕${country}` : '',
+      signalType ? `重点追踪${signalType}` : '',
+      '继续预测未来72小时内的关键参与方、传播平台与风险路径演化',
+    ].filter(Boolean)
+
+    setViewMode('split')
+    setConfig((prev) => ({
+      ...prev,
+      seed_content: nextSeed || prev.seed_content,
+      simulation_requirement: nextRequirementBits.join('，') || prev.simulation_requirement,
+    }))
+    setPersistedGraphContext((prev) => ({
+      ...(prev ?? draftGraphContext ?? {}),
+      selected_digest: item,
+    }))
+    setTimeout(() => {
+      seedTextareaRef.current?.focus()
+      seedTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 80)
+  }, [draftCountryName, draftGraphContext])
   const estimateRemaining = () => {
     if (!selectedRun) return '等待创建预测记录'
     if (selectedRun.status === 'completed' && selectedRun.duration_ms) {
@@ -1602,6 +1744,15 @@ export default function SimulationPage() {
                   <div>路径: 直接沿着这组上下文进入未来预测</div>
                 </div>
               )}
+              {draftGraphContext?.selected_digest?.title ? (
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.65 }}>
+                  <div style={{ fontFamily: 'var(--font-mono)', marginBottom: 4 }}>当前派生来源</div>
+                  <div style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{draftGraphContext.selected_digest.title}</div>
+                  {draftGraphContext.selected_digest.summary ? (
+                    <div style={{ marginTop: 4 }}>{draftGraphContext.selected_digest.summary}</div>
+                  ) : null}
+                </div>
+              ) : null}
               <button className="btn btn-secondary btn-sm" onClick={clearDraft} style={{ justifyContent: 'center' }}>
                 清空草稿
               </button>
@@ -1698,7 +1849,9 @@ export default function SimulationPage() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)', padding: 'var(--sp-2)' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: runsExpanded ? 360 : undefined, overflowY: runsExpanded ? 'auto' : undefined, paddingRight: runsExpanded ? 4 : 0 }}>
-                  {visibleRuns.map(run => (
+                  {visibleRuns.map(run => {
+                    const sourceContext = describeRunSourceContext(run)
+                    return (
                     <div key={run.run_id} onClick={() => setSelectedRun(run)} style={{
                       padding: 'var(--sp-3)', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
                       border: `1px solid ${selectedRun?.run_id === run.run_id ? 'var(--accent)' : 'transparent'}`,
@@ -1716,13 +1869,37 @@ export default function SimulationPage() {
                         <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                           {run.rounds_completed} 轮 · {run.convergence_achieved ? '已收敛' : '未收敛'}
                         </div>
+                        {(sourceContext.stage || sourceContext.quality) ? (
+                          <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {sourceContext.stage ? (
+                              <span style={{ padding: '2px 7px', borderRadius: 999, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)', fontSize: '0.62rem', color: 'var(--text-secondary)' }}>
+                                {sourceContext.stage}
+                              </span>
+                            ) : null}
+                            {sourceContext.quality ? (
+                              <span style={{ padding: '2px 7px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)', fontSize: '0.62rem', color: 'var(--text-secondary)' }}>
+                                {sourceContext.quality}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        {sourceContext.digestTitle ? (
+                          <div style={{ marginTop: 6, fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.55 }}>
+                            {sourceContext.digestTitle}
+                          </div>
+                        ) : null}
+                        {sourceContext.summary && !sourceContext.digestTitle ? (
+                          <div style={{ marginTop: 6, fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.55 }}>
+                            {sourceContext.summary}
+                          </div>
+                        ) : null}
                       </div>
                       <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); handleDelete(run.run_id) }}
                         style={{ color: 'var(--text-muted)', padding: '2px 6px' }}>
                         <CloseIcon />
                       </button>
                     </div>
-                  ))}
+                  )})}
                 </div>
                 {hasCollapsedRuns ? (
                   <button
@@ -1758,6 +1935,7 @@ export default function SimulationPage() {
                 <div>
                   <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>议题种子</label>
                   <textarea
+                    ref={seedTextareaRef}
                     value={config.seed_content}
                     onChange={e => setConfig(p => ({ ...p, seed_content: e.target.value }))}
                     placeholder="输入预测议题、报道摘要或来自研判页的综合结论..."
@@ -2045,6 +2223,19 @@ export default function SimulationPage() {
                   lineHeight: 1.7,
                 }}>
                   这部分来自议题研判阶段的图谱校准结果。你可以把它当作未来预测的结构化起点，用来对照右侧摘要和主图谱里的后续路径演化。
+                  <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                        当前阶段 {graphCalibrationSummary.analysisStage}
+                      </span>
+                      <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                        当前质量 {graphCalibrationSummary.analysisQuality}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                      {graphCalibrationSummary.analysisSummary}
+                    </div>
+                  </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.06)', border: '1px solid rgba(124,58,237,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
@@ -2065,6 +2256,26 @@ export default function SimulationPage() {
                     检索词：{graphCalibrationSummary.topQueries.join('、')}
                   </div>
                 ) : null}
+                {graphCalibrationSummary.selectedDigest ? (
+                  <div style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(124,58,237,0.12)', background: 'rgba(255,255,255,0.94)' }}>
+                    <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 6 }}>
+                      当前选中的研判摘要
+                    </div>
+                    <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                      {graphCalibrationSummary.selectedDigest.title || '研判监控摘要'}
+                    </div>
+                    {graphCalibrationSummary.selectedDigest.summary ? (
+                      <div style={{ marginTop: 4, fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                        {graphCalibrationSummary.selectedDigest.summary}
+                      </div>
+                    ) : null}
+                    <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: '0.64rem', color: 'var(--text-muted)' }}>
+                      {graphCalibrationSummary.selectedDigest.source ? <span>{graphCalibrationSummary.selectedDigest.source}</span> : null}
+                      {graphCalibrationSummary.selectedDigest.country ? <span>{graphCalibrationSummary.selectedDigest.country}</span> : null}
+                      {graphCalibrationSummary.selectedDigest.signal_type ? <span>{graphCalibrationSummary.selectedDigest.signal_type}</span> : null}
+                    </div>
+                  </div>
+                ) : null}
                 {graphCalibrationSummary.topFacts.length ? (
                   <div style={{ display: 'grid', gap: 'var(--sp-2)' }}>
                     {graphCalibrationSummary.topFacts.map((fact, index) => (
@@ -2078,6 +2289,37 @@ export default function SimulationPage() {
                     当前还没有继承到图谱校准事实，后续将继续以未来预测图谱补足。
                   </div>
                 )}
+                {graphCalibrationSummary.topNewsDigest.length ? (
+                  <div style={{ display: 'grid', gap: 'var(--sp-2)' }}>
+                    <div style={{ fontSize: '0.68rem', color: '#2563eb', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
+                      研判首屏摘要
+                    </div>
+                    {graphCalibrationSummary.topNewsDigest.map((item, index) => (
+                      <div key={`${item.title || 'digest'}-${index}`} style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(37,99,235,0.12)', background: 'rgba(255,255,255,0.94)' }}>
+                        <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                          {item.title || '监控摘要'}
+                        </div>
+                        {item.summary ? (
+                          <div style={{ marginTop: 4, fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                            {item.summary}
+                          </div>
+                        ) : null}
+                        <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: '0.64rem', color: 'var(--text-muted)' }}>
+                          {item.source ? <span>{item.source}</span> : null}
+                          {item.country ? <span>{item.country}</span> : null}
+                          {item.signal_type ? <span>{item.signal_type}</span> : null}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleUseDigestForSeed(item)}
+                          style={{ marginTop: 8, border: 'none', background: 'none', padding: 0, color: 'var(--accent)', fontSize: '0.68rem', cursor: 'pointer', fontWeight: 600 }}
+                        >
+                          带回创建区继续预测
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -2123,6 +2365,21 @@ export default function SimulationPage() {
                   图谱 {graphData?.graph_source_mode || '等待校准'}
                 </span>
               </div>
+              {graphCalibrationSummary?.selectedDigest ? (
+                <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(124,58,237,0.12)', background: 'rgba(255,255,255,0.94)' }}>
+                  <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 6 }}>
+                    当前派生来源
+                  </div>
+                  <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                    {graphCalibrationSummary.selectedDigest.title || '研判监控摘要'}
+                  </div>
+                  {graphCalibrationSummary.selectedDigest.summary ? (
+                    <div style={{ marginTop: 4, fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                      {graphCalibrationSummary.selectedDigest.summary}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {graphData?.graph_entity_types?.length ? (
                 <div style={{ marginTop: 10, fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
                   当前图谱类型：{graphData.graph_entity_types.slice(0, 6).join('、')}
@@ -2313,7 +2570,14 @@ export default function SimulationPage() {
 
       {/* Report Viewer Drawer */}
       {showReport && selectedRun && (
-        <ReportViewer runId={selectedRun.run_id} onClose={() => setShowReport(false)} countryContext={draftCountryContext} graphContext={draftGraphContext} />
+        <ReportViewer
+          runId={selectedRun.run_id}
+          onClose={() => setShowReport(false)}
+          countryContext={draftCountryContext}
+          graphContext={draftGraphContext}
+          onGraphFocus={focusGraphFromWorkbench}
+          onUseDigest={handleUseDigestForSeed}
+        />
       )}
     </div>
   )

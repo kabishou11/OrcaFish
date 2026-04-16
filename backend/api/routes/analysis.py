@@ -1198,6 +1198,7 @@ def _merge_agent_reports(
 async def trigger_analysis(req: AnalysisRequest) -> dict:
     """Trigger a multi-agent舆情 analysis (runs Insight + Media + Query in parallel)"""
     task_id = f"task_{uuid.uuid4().hex[:12]}"
+    matched_terms = _extract_query_terms(req.query)
     task = AnalysisTask(
         task_id=task_id,
         query=req.query,
@@ -1205,8 +1206,8 @@ async def trigger_analysis(req: AnalysisRequest) -> dict:
         progress=3,
         agent_status={"query": "queued", "media": "queued", "insight": "queued", "report": "queued"},
         agent_metrics=_build_initial_agent_metrics(),
-        matched_terms=_extract_query_terms(req.query),
-        sections=_build_initial_sections(req.query, _extract_query_terms(req.query)),
+        matched_terms=matched_terms,
+        sections=_build_initial_sections(req.query, matched_terms),
         timeline=[
             _make_timeline_event(
                 "queued",
@@ -1218,6 +1219,29 @@ async def trigger_analysis(req: AnalysisRequest) -> dict:
         ui_message="议题已提交，结果会按搜索、媒体、洞察、综合四段陆续到达。",
         last_update_at=datetime.now(UTC),
     )
+
+    try:
+        warm_digest = await asyncio.wait_for(
+            asyncio.to_thread(_build_fallback_news_digest, req.query),
+            timeout=3.0,
+        )
+    except Exception:
+        warm_digest = []
+
+    if warm_digest:
+        task.news_digest = warm_digest
+        task.source_count = len(warm_digest)
+        task.progress = 8
+        task.timeline.append(
+            _make_timeline_event(
+                "warm_digest",
+                "监控摘要已预热",
+                f"已先接入 {len(warm_digest)} 条监控新闻摘要，页面可先查看最新线索。",
+                "done",
+            )
+        )
+        task.ui_message = f"已先接入 {len(warm_digest)} 条监控摘要，多代理研判结果会继续陆续到达。"
+
     _task_registry[task_id] = task
 
     asyncio.create_task(_run_agent_team(task_id, req.query))
@@ -1238,6 +1262,8 @@ async def trigger_analysis(req: AnalysisRequest) -> dict:
         "graph_facts": task.graph_facts,
         "graph_edges": task.graph_edges,
         "graph_nodes": task.graph_nodes,
+        "source_count": task.source_count,
+        "news_digest": task.news_digest,
         "ui_message": task.ui_message,
         "last_update_at": task.last_update_at.isoformat() if task.last_update_at else None,
         "message": "多智能体分析已提交，Query + Media + Insight 并行运行中，请通过 /api/analysis/{task_id} 查询结果",
