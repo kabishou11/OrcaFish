@@ -38,6 +38,17 @@ interface DraftGraphContextSummary {
   graph_source_mode?: string
   graph_queries?: string[]
   graph_facts?: string[]
+  analysis_stage?: string
+  analysis_quality?: string
+  analysis_summary?: string
+  news_digest?: Array<{
+    title?: string
+    summary?: string
+    source?: string
+    country?: string
+    published_at?: string
+    signal_type?: string
+  }>
   graph_edges?: Array<{
     source?: string
     target?: string
@@ -1253,12 +1264,16 @@ export default function SimulationPage() {
     if (!draftGraphContext) return null
     return {
       sourceMode: draftGraphContext.graph_source_mode || 'waiting',
+      analysisStage: draftGraphContext.analysis_stage || '等待研判阶段同步',
+      analysisQuality: draftGraphContext.analysis_quality || '等待质量标记',
+      analysisSummary: draftGraphContext.analysis_summary || '当前还没有继承到议题研判摘要。',
       queryCount: draftGraphContext.graph_queries?.length ?? 0,
       factCount: draftGraphContext.graph_facts?.length ?? 0,
       edgeCount: draftGraphContext.graph_edges?.length ?? 0,
       nodeCount: draftGraphContext.graph_nodes?.length ?? 0,
       topFacts: (draftGraphContext.graph_facts ?? []).slice(0, 3),
       topQueries: (draftGraphContext.graph_queries ?? []).slice(0, 4),
+      topNewsDigest: (draftGraphContext.news_digest ?? []).slice(0, 3),
     }
   }, [draftGraphContext])
   const estimateRemaining = () => {
@@ -2045,6 +2060,19 @@ export default function SimulationPage() {
                   lineHeight: 1.7,
                 }}>
                   这部分来自议题研判阶段的图谱校准结果。你可以把它当作未来预测的结构化起点，用来对照右侧摘要和主图谱里的后续路径演化。
+                  <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                        当前阶段 {graphCalibrationSummary.analysisStage}
+                      </span>
+                      <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
+                        当前质量 {graphCalibrationSummary.analysisQuality}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                      {graphCalibrationSummary.analysisSummary}
+                    </div>
+                  </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.06)', border: '1px solid rgba(124,58,237,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
@@ -2078,6 +2106,30 @@ export default function SimulationPage() {
                     当前还没有继承到图谱校准事实，后续将继续以未来预测图谱补足。
                   </div>
                 )}
+                {graphCalibrationSummary.topNewsDigest.length ? (
+                  <div style={{ display: 'grid', gap: 'var(--sp-2)' }}>
+                    <div style={{ fontSize: '0.68rem', color: '#2563eb', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
+                      研判首屏摘要
+                    </div>
+                    {graphCalibrationSummary.topNewsDigest.map((item, index) => (
+                      <div key={`${item.title || 'digest'}-${index}`} style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(37,99,235,0.12)', background: 'rgba(255,255,255,0.94)' }}>
+                        <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                          {item.title || '监控摘要'}
+                        </div>
+                        {item.summary ? (
+                          <div style={{ marginTop: 4, fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                            {item.summary}
+                          </div>
+                        ) : null}
+                        <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: '0.64rem', color: 'var(--text-muted)' }}>
+                          {item.source ? <span>{item.source}</span> : null}
+                          {item.country ? <span>{item.country}</span> : null}
+                          {item.signal_type ? <span>{item.signal_type}</span> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : null}

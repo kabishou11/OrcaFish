@@ -12,6 +12,17 @@ export interface SimulationDraft {
     graph_source_mode?: string
     graph_queries?: string[]
     graph_facts?: string[]
+    analysis_stage?: string
+    analysis_quality?: string
+    analysis_summary?: string
+    news_digest?: Array<{
+      title?: string
+      summary?: string
+      source?: string
+      country?: string
+      published_at?: string
+      signal_type?: string
+    }>
     graph_edges?: Array<{
       source?: string
       target?: string
