@@ -49,6 +49,7 @@ interface DraftGraphContextSummary {
     published_at?: string
     signal_type?: string
   }>
+  selected_digest?: DraftDigestItem | null
   graph_edges?: Array<{
     source?: string
     target?: string
@@ -1351,6 +1352,7 @@ export default function SimulationPage() {
       analysisStage: draftGraphContext.analysis_stage || '等待研判阶段同步',
       analysisQuality: draftGraphContext.analysis_quality || '等待质量标记',
       analysisSummary: draftGraphContext.analysis_summary || '当前还没有继承到议题研判摘要。',
+      selectedDigest: draftGraphContext.selected_digest ?? null,
       queryCount: draftGraphContext.graph_queries?.length ?? 0,
       factCount: draftGraphContext.graph_facts?.length ?? 0,
       edgeCount: draftGraphContext.graph_edges?.length ?? 0,
@@ -1366,7 +1368,7 @@ export default function SimulationPage() {
       stage: graphContext?.analysis_stage || '',
       quality: graphContext?.analysis_quality || '',
       summary: graphContext?.analysis_summary || '',
-      digestTitle: graphContext?.news_digest?.[0]?.title || '',
+      digestTitle: graphContext?.selected_digest?.title || graphContext?.news_digest?.[0]?.title || '',
     }
   }
   const handleUseDigestForSeed = useCallback((item: DraftDigestItem) => {
@@ -1387,11 +1389,15 @@ export default function SimulationPage() {
       seed_content: nextSeed || prev.seed_content,
       simulation_requirement: nextRequirementBits.join('，') || prev.simulation_requirement,
     }))
+    setPersistedGraphContext((prev) => ({
+      ...(prev ?? draftGraphContext ?? {}),
+      selected_digest: item,
+    }))
     setTimeout(() => {
       seedTextareaRef.current?.focus()
       seedTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }, 80)
-  }, [draftCountryName])
+  }, [draftCountryName, draftGraphContext])
   const estimateRemaining = () => {
     if (!selectedRun) return '等待创建预测记录'
     if (selectedRun.status === 'completed' && selectedRun.duration_ms) {
@@ -2234,6 +2240,26 @@ export default function SimulationPage() {
                 {graphCalibrationSummary.topQueries.length ? (
                   <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
                     检索词：{graphCalibrationSummary.topQueries.join('、')}
+                  </div>
+                ) : null}
+                {graphCalibrationSummary.selectedDigest ? (
+                  <div style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(124,58,237,0.12)', background: 'rgba(255,255,255,0.94)' }}>
+                    <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 6 }}>
+                      当前选中的研判摘要
+                    </div>
+                    <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                      {graphCalibrationSummary.selectedDigest.title || '研判监控摘要'}
+                    </div>
+                    {graphCalibrationSummary.selectedDigest.summary ? (
+                      <div style={{ marginTop: 4, fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                        {graphCalibrationSummary.selectedDigest.summary}
+                      </div>
+                    ) : null}
+                    <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: '0.64rem', color: 'var(--text-muted)' }}>
+                      {graphCalibrationSummary.selectedDigest.source ? <span>{graphCalibrationSummary.selectedDigest.source}</span> : null}
+                      {graphCalibrationSummary.selectedDigest.country ? <span>{graphCalibrationSummary.selectedDigest.country}</span> : null}
+                      {graphCalibrationSummary.selectedDigest.signal_type ? <span>{graphCalibrationSummary.selectedDigest.signal_type}</span> : null}
+                    </div>
                   </div>
                 ) : null}
                 {graphCalibrationSummary.topFacts.length ? (

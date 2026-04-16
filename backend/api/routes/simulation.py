@@ -2594,6 +2594,7 @@ async def get_simulation_report(run_id: str) -> dict:
         edges = inherited_graph_context.get("graph_edges") if isinstance(inherited_graph_context.get("graph_edges"), list) else []
         nodes = inherited_graph_context.get("graph_nodes") if isinstance(inherited_graph_context.get("graph_nodes"), list) else []
         news_digest = inherited_graph_context.get("news_digest") if isinstance(inherited_graph_context.get("news_digest"), list) else []
+        selected_digest = inherited_graph_context.get("selected_digest") if isinstance(inherited_graph_context.get("selected_digest"), dict) else {}
         analysis_stage = escape(str(inherited_graph_context.get("analysis_stage") or "等待研判阶段同步"))
         analysis_quality = escape(str(inherited_graph_context.get("analysis_quality") or "等待质量标记"))
         analysis_summary = escape(str(inherited_graph_context.get("analysis_summary") or "当前还没有继承到议题研判摘要。"))
@@ -2637,6 +2638,20 @@ async def get_simulation_report(run_id: str) -> dict:
         edge_table = "".join(edge_rows) if edge_rows else "<tr><td colspan='4' style='color:#94a3b8'>没有继承到关系结构</td></tr>"
         node_table = "".join(node_rows) if node_rows else "<tr><td colspan='3' style='color:#94a3b8'>没有继承到节点结构</td></tr>"
         digest_html = "".join(digest_items) if digest_items else "<li>没有继承到研判首屏摘要</li>"
+        selected_digest_html = ""
+        if selected_digest:
+            selected_title = escape(str(selected_digest.get("title") or "研判监控摘要"))
+            selected_summary = escape(str(selected_digest.get("summary") or ""))
+            selected_meta_bits = [str(selected_digest.get("source") or ""), str(selected_digest.get("country") or ""), str(selected_digest.get("signal_type") or "")]
+            selected_meta = " · ".join(escape(bit) for bit in selected_meta_bits if bit)
+            selected_digest_html = (
+                "<div class='section-card'>"
+                "<h2>本次预测选用的研判摘要</h2>"
+                f"<p><strong>{selected_title}</strong></p>"
+                f"{f'<p class=\"hint\">{selected_summary}</p>' if selected_summary else ''}"
+                f"{f'<p class=\"hint\">{selected_meta}</p>' if selected_meta else ''}"
+                "</div>"
+            )
         return (
             "<div>"
             "<h2>继承的图谱校准</h2>"
@@ -2646,6 +2661,7 @@ async def get_simulation_report(run_id: str) -> dict:
             f"<p class='hint'>当前阶段：{analysis_stage} · 当前质量：{analysis_quality}</p>"
             f"<p>{analysis_summary}</p>"
             f"<p class='hint'>继承了 {len(queries)} 个检索词、{len(facts)} 条事实、{len(edges)} 条关系、{len(nodes)} 个节点。</p>"
+            f"{selected_digest_html}"
             "<div class='grid-2'>"
             f"<div><h2>继承检索词</h2><ul>{query_html}</ul></div>"
             f"<div><h2>继承事实</h2><ul>{fact_html}</ul></div>"
