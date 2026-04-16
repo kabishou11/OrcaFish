@@ -2351,6 +2351,21 @@ export default function SimulationPage() {
                   图谱 {graphData?.graph_source_mode || '等待校准'}
                 </span>
               </div>
+              {graphCalibrationSummary?.selectedDigest ? (
+                <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(124,58,237,0.12)', background: 'rgba(255,255,255,0.94)' }}>
+                  <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 6 }}>
+                    当前派生来源
+                  </div>
+                  <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                    {graphCalibrationSummary.selectedDigest.title || '研判监控摘要'}
+                  </div>
+                  {graphCalibrationSummary.selectedDigest.summary ? (
+                    <div style={{ marginTop: 4, fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                      {graphCalibrationSummary.selectedDigest.summary}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {graphData?.graph_entity_types?.length ? (
                 <div style={{ marginTop: 10, fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
                   当前图谱类型：{graphData.graph_entity_types.slice(0, 6).join('、')}
