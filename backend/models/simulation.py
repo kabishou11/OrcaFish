@@ -145,6 +145,7 @@ class BatchInterviewRequest(BaseModel):
 class GraphNode(BaseModel):
     id: str
     uuid: str = ""
+    locator_id: str = ""
     name: str
     type: str  # Agent | Entity | Event | Location | Concept
     labels: List[str] = Field(default_factory=list)
@@ -158,6 +159,7 @@ class GraphEdge(BaseModel):
     source: str
     target: str
     uuid: str = ""
+    locator_id: str = ""
     type: str  # follows | mentions | retweets | believes | influences
     fact_type: str = ""
     weight: float = 1.0
@@ -174,6 +176,10 @@ class GraphEdge(BaseModel):
     invalid_at: Optional[str] = None
     expired_at: Optional[str] = None
     episodes: List[str] = Field(default_factory=list)
+    evidence_node_ids: List[str] = Field(default_factory=list)
+    source_kind: str = ""
+    origin: str = ""
+    confidence: float = 0.0
 
 
 class KGData(BaseModel):

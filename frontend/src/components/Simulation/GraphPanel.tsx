@@ -8,6 +8,7 @@ interface GraphNode {
   name: string
   type: string
   labels?: string[]
+  locator_id?: string
   rawData?: Record<string, unknown>
   // D3 simulation fields
   x?: number; y?: number; fx?: number | null; fy?: number | null
@@ -17,6 +18,7 @@ interface GraphEdge {
   source: string | GraphNode
   target: string | GraphNode
   uuid?: string
+  locator_id?: string
   type?: string
   name?: string
   label?: string
@@ -25,7 +27,11 @@ interface GraphEdge {
   source_node_uuid?: string
   target_node_uuid?: string
   fact?: string
+  origin?: string
+  source_kind?: string
+  confidence?: number
   episodes?: string[]
+  evidence_node_ids?: string[]
   created_at?: string
   weight?: number
   // D3 computed
@@ -65,6 +71,17 @@ interface GraphPanelProps {
     graph_source_mode?: string
     graph_entity_types?: string[]
     graph_synced_at?: string | null
+    graph_refresh_status?: string
+    graph_refresh_error?: string | null
+    graph_is_stale?: boolean
+    source_breakdown?: {
+      remote_nodes?: number
+      remote_edges?: number
+      snapshot_nodes?: number
+      snapshot_edges?: number
+      runtime_nodes?: number
+      runtime_edges?: number
+    }
   }
   loading?: boolean
   onRefresh?: () => void
@@ -253,6 +270,28 @@ function getGraphSourceModeLabel(sourceMode?: string | null): string {
   if (normalized.includes('snapshot')) return '本地图谱快照'
   if (normalized.includes('search')) return '图谱检索校准'
   return sourceMode || '等待图谱同步'
+}
+
+function getGraphRefreshStatusLabel(status?: string | null, isStale?: boolean): string {
+  const normalized = String(status || '').trim().toLowerCase()
+  if (normalized === 'fresh') return isStale ? '已同步但需要刷新' : '图谱已同步'
+  if (normalized === 'stale') return '图谱待刷新'
+  if (normalized === 'refreshing') return '图谱刷新中'
+  if (normalized === 'failed') return '图谱刷新失败'
+  return isStale ? '图谱待刷新' : '等待图谱同步'
+}
+
+function getSourceKindLabel(value?: string | null): string {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) return '未标记来源'
+  if (normalized.includes('remote')) return '真实图谱'
+  if (normalized.includes('snapshot')) return '快照补层'
+  if (normalized.includes('runtime')) return '运行时补层'
+  if (normalized.includes('platform')) return '平台补层'
+  if (normalized.includes('seed')) return '种子补层'
+  if (normalized.includes('simulation')) return '预测主节点'
+  if (normalized.includes('action')) return '行动流补层'
+  return value || '未标记来源'
 }
 
 function getNodeRadius(type: string): number {
@@ -478,6 +517,59 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   )
 }
 
+function DetailBadge({ label, tone = '#475569' }: { label: string; tone?: string }) {
+  return (
+    <span
+      style={{
+        padding: '4px 8px',
+        borderRadius: 999,
+        background: 'rgba(255,255,255,0.92)',
+        border: '1px solid #dbe7f3',
+        fontSize: 10,
+        color: tone,
+        fontWeight: 600,
+      }}
+    >
+      {label}
+    </span>
+  )
+}
+
+function InspectorSection({
+  title,
+  defaultOpen = false,
+  children,
+}: {
+  title: string
+  defaultOpen?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <details
+      open={defaultOpen}
+      style={{
+        marginTop: 14,
+        borderTop: '1px solid #f0f0f0',
+        paddingTop: 12,
+      }}
+    >
+      <summary
+        style={{
+          fontSize: 11,
+          fontWeight: 700,
+          color: '#64748b',
+          letterSpacing: '0.05em',
+          cursor: 'pointer',
+          listStyle: 'none',
+        }}
+      >
+        {title}
+      </summary>
+      <div style={{ marginTop: 10 }}>{children}</div>
+    </details>
+  )
+}
+
 // ── Main GraphPanel Component ──────────────────────────────────────────────────
 
 export default function GraphPanel({
@@ -502,6 +594,7 @@ export default function GraphPanel({
   const [relationFilter, setRelationFilter] = useState<'all' | string>('all')
   const [focusCurrentPath, setFocusCurrentPath] = useState(false)
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false)
+  const [searchTerm, setSearchTerm] = useState('')
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const linkLabelRef = useRef<d3.Selection<SVGTextElement, any, SVGGElement, unknown> | null>(null)
@@ -723,12 +816,12 @@ export default function GraphPanel({
     const g = svg.append('g').attr('transform', zoomTransformRef.current.toString())
 
     const laneSpecs = [
-      { x: 0.02, width: 0.18, color: 'rgba(37,99,235,0.04)' },
-      { x: 0.20, width: 0.16, color: 'rgba(14,165,233,0.04)' },
-      { x: 0.36, width: 0.20, color: 'rgba(249,115,22,0.04)' },
-      { x: 0.56, width: 0.14, color: 'rgba(22,163,74,0.04)' },
-      { x: 0.70, width: 0.18, color: 'rgba(124,58,237,0.04)' },
-      { x: 0.88, width: 0.10, color: 'rgba(15,118,110,0.04)' },
+      { x: 0.02, width: 0.18, color: 'rgba(37,99,235,0.05)', label: '议题 / 目标', accent: '#2563eb' },
+      { x: 0.20, width: 0.16, color: 'rgba(14,165,233,0.05)', label: '证据片段', accent: '#0ea5e9' },
+      { x: 0.36, width: 0.20, color: 'rgba(249,115,22,0.05)', label: '实体 / 概念', accent: '#f97316' },
+      { x: 0.56, width: 0.14, color: 'rgba(22,163,74,0.05)', label: '传播平台', accent: '#16a34a' },
+      { x: 0.70, width: 0.18, color: 'rgba(124,58,237,0.05)', label: '观察角色', accent: '#7c3aed' },
+      { x: 0.88, width: 0.10, color: 'rgba(15,118,110,0.05)', label: '动作层', accent: '#0f766e' },
     ]
 
     const laneLayer = g.append('g')
@@ -742,6 +835,24 @@ export default function GraphPanel({
         .attr('fill', lane.color)
         .attr('stroke', 'rgba(148,163,184,0.08)')
         .attr('stroke-width', 1)
+      laneLayer.append('rect')
+        .attr('x', width * lane.x + 12)
+        .attr('y', 78)
+        .attr('width', Math.max(80, width * lane.width - 24))
+        .attr('height', 26)
+        .attr('rx', 13)
+        .attr('fill', 'rgba(255,255,255,0.88)')
+        .attr('stroke', lane.accent)
+        .attr('stroke-opacity', 0.12)
+        .attr('stroke-width', 1)
+      laneLayer.append('text')
+        .attr('x', width * lane.x + 24)
+        .attr('y', 95)
+        .attr('fill', lane.accent)
+        .attr('font-size', 11)
+        .attr('font-weight', 700)
+        .style('font-family', "'IBM Plex Sans', system-ui, sans-serif")
+        .text(lane.label)
     })
 
     const zoomBehavior = d3.zoom<SVGSVGElement, unknown>()
@@ -773,7 +884,7 @@ export default function GraphPanel({
       .join('path')
       .attr('stroke', (d) => getEdgeColor(d))
       .attr('stroke-width', (d) => Math.max(2.8, (((d.rawData?.weight as number) ?? 1)) * 3.2))
-      .attr('stroke-opacity', 0.98)
+      .attr('stroke-opacity', 0.76)
       .attr('fill', 'none')
       .style('cursor', 'pointer')
       .attr('marker-end', 'url(#graph-arrow)')
@@ -1120,6 +1231,8 @@ export default function GraphPanel({
     return (edgeId: string) => {
       if (!graphData?.edges?.length || !graphData?.nodes?.length) return
       const edge = graphData.edges.find((item) => {
+        const locatorId = String(item.rawData?.locator_id ?? item.locator_id ?? item.uuid ?? '').trim()
+        if (locatorId && locatorId === edgeId) return true
         const source = String(
           item.rawData?.source_node_uuid
           ?? item.source_node_uuid
@@ -1250,6 +1363,12 @@ export default function GraphPanel({
   }, [selectedItem])
   const selectedEdgeEvidenceNodes = useMemo(() => {
     if (selectedItem?.type !== 'edge' || !graphData?.nodes?.length) return []
+    const evidenceIds = (((selectedItem.data?.evidence_node_ids as string[] | undefined) ?? []) as string[])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+    if (evidenceIds.length > 0) {
+      return graphData.nodes.filter((node) => evidenceIds.includes(String(node.id || ''))).slice(0, 6)
+    }
     const refs = (((selectedItem.data?.episodes as string[] | undefined) ?? []) as string[])
       .map((item) => String(item || '').trim())
       .filter(Boolean)
@@ -1273,6 +1392,20 @@ export default function GraphPanel({
     () => getGraphSourceModeLabel(graphData?.graph_source_mode),
     [graphData?.graph_source_mode],
   )
+  const refreshStatusLabel = useMemo(
+    () => getGraphRefreshStatusLabel(graphData?.graph_refresh_status, graphData?.graph_is_stale),
+    [graphData?.graph_is_stale, graphData?.graph_refresh_status],
+  )
+  const sourceBreakdownItems = useMemo(() => {
+    const breakdown = graphData?.source_breakdown
+    if (!breakdown) return []
+    return [
+      { label: '真实节点', value: Number(breakdown.remote_nodes || 0), tone: '#2563eb' },
+      { label: '真实关系', value: Number(breakdown.remote_edges || 0), tone: '#0284c7' },
+      { label: '快照补层', value: Number(breakdown.snapshot_nodes || 0) + Number(breakdown.snapshot_edges || 0), tone: '#7c3aed' },
+      { label: '运行时补层', value: Number(breakdown.runtime_nodes || 0) + Number(breakdown.runtime_edges || 0), tone: '#16a34a' },
+    ]
+  }, [graphData?.source_breakdown])
   const graphPhaseBadge = useMemo(() => {
     if (loading) {
       return {
@@ -1333,6 +1466,53 @@ export default function GraphPanel({
     fontWeight: 600,
     cursor: 'pointer',
   }
+  const graphSearchResults = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase()
+    if (!keyword || !graphData?.nodes?.length) return []
+    const nodeResults = graphData.nodes
+      .filter((node) => {
+        const typeLabel = getNodeTypeLabel(getNodeType(node)).toLowerCase()
+        const rawSummary = String((node.rawData?.summary as string | undefined) || '')
+        return [node.name, getNodeType(node), typeLabel, rawSummary]
+          .some((item) => String(item || '').toLowerCase().includes(keyword))
+      })
+      .slice(0, 5)
+      .map((node) => ({
+        id: node.id,
+        kind: 'node' as const,
+        title: node.name,
+        subtitle: getNodeTypeLabel(getNodeType(node)),
+        hint: String((node.rawData?.summary as string | undefined) || '').slice(0, 72),
+        locator: String(node.locator_id || node.rawData?.locator_id || node.id),
+      }))
+    const edgeResults = (graphData.edges || [])
+      .filter((edge) => {
+        const relation = getEdgeLabel(edge)
+        const fact = String(edge.fact || edge.rawData?.fact || '')
+        const sourceName = String(edge.rawData?.source_name ?? (typeof edge.source === 'object' ? edge.source?.name : edge.source) ?? '')
+        const targetName = String(edge.rawData?.target_name ?? (typeof edge.target === 'object' ? edge.target?.name : edge.target) ?? '')
+        return [relation, fact, sourceName, targetName].some((item) => String(item || '').toLowerCase().includes(keyword))
+      })
+      .slice(0, 5)
+      .map((edge) => ({
+        id: String(edge.locator_id || edge.rawData?.locator_id || edge.uuid || ''),
+        kind: 'edge' as const,
+        title: `${String(edge.rawData?.source_name ?? (typeof edge.source === 'object' ? edge.source?.name : edge.source) ?? '未知源')} → ${String(edge.rawData?.target_name ?? (typeof edge.target === 'object' ? edge.target?.name : edge.target) ?? '未知目标')}`,
+        subtitle: getEdgeLabel(edge),
+        hint: String(edge.fact || edge.rawData?.fact || '').slice(0, 72),
+      }))
+    return [...nodeResults, ...edgeResults].slice(0, 8)
+  }, [graphData?.edges, graphData?.nodes, searchTerm])
+  const handleSearchSelect = useMemo(() => {
+    return (item: { kind: 'node' | 'edge'; id: string }) => {
+      if (item.kind === 'node') {
+        selectNodeById(item.id)
+      } else {
+        selectEdgeByIdentity(item.id)
+      }
+      setSearchTerm('')
+    }
+  }, [selectEdgeByIdentity, selectNodeById])
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', fontFamily: "'IBM Plex Sans', system-ui, sans-serif", background: isFullscreen ? '#f8fbff' : 'transparent' }}>
@@ -1344,7 +1524,7 @@ export default function GraphPanel({
         background: 'linear-gradient(to bottom, rgba(255,255,255,0.95), rgba(255,255,255,0))',
         pointerEvents: 'none',
       }}>
-        <div style={{ pointerEvents: 'auto' }}>
+        <div style={{ pointerEvents: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>未来关系图谱</div>
           <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{
@@ -1378,7 +1558,86 @@ export default function GraphPanel({
                 图谱来源 · {sourceModeLabel}
               </span>
             ) : null}
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 10px',
+              borderRadius: 999,
+              background: graphData?.graph_is_stale ? 'rgba(245,158,11,0.10)' : 'rgba(255,255,255,0.88)',
+              border: graphData?.graph_is_stale ? '1px solid rgba(245,158,11,0.24)' : '1px solid rgba(219,231,243,0.92)',
+              fontSize: 11,
+              color: graphData?.graph_is_stale ? '#b45309' : '#475569',
+              fontWeight: 600,
+            }}>
+              刷新状态 · {refreshStatusLabel}
+            </span>
           </div>
+          {graphData?.nodes?.length ? (
+            <div style={{ position: 'relative', width: isFullscreen ? 340 : 280 }}>
+              <input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="搜索节点、关系、证据"
+                style={{
+                  width: '100%',
+                  height: 34,
+                  borderRadius: 10,
+                  border: '1px solid rgba(219,231,243,0.92)',
+                  background: 'rgba(255,255,255,0.92)',
+                  padding: '0 12px',
+                  fontSize: 12,
+                  color: '#334155',
+                  outline: 'none',
+                  boxShadow: '0 8px 24px rgba(15,23,42,0.04)',
+                }}
+              />
+              {searchTerm.trim() ? (
+                <div style={{
+                  position: 'absolute',
+                  top: 40,
+                  left: 0,
+                  right: 0,
+                  background: 'rgba(255,255,255,0.98)',
+                  border: '1px solid rgba(219,231,243,0.92)',
+                  borderRadius: 12,
+                  boxShadow: '0 12px 32px rgba(15,23,42,0.10)',
+                  overflow: 'hidden',
+                  zIndex: 18,
+                }}>
+                  {graphSearchResults.length ? graphSearchResults.map((item) => (
+                    <button
+                      key={`${item.kind}:${item.id}`}
+                      type="button"
+                      onClick={() => handleSearchSelect(item)}
+                      style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        border: 'none',
+                        borderBottom: '1px solid rgba(241,245,249,0.92)',
+                        background: 'transparent',
+                        textAlign: 'left',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a' }}>{item.title}</div>
+                        <div style={{ fontSize: 10, color: item.kind === 'node' ? '#2563eb' : '#7c3aed', fontWeight: 700 }}>
+                          {item.kind === 'node' ? '节点' : '关系'}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 11, color: '#475569', marginBottom: item.hint ? 4 : 0 }}>{item.subtitle}</div>
+                      {item.hint ? <div style={{ fontSize: 10, color: '#64748b', lineHeight: 1.6 }}>{item.hint}</div> : null}
+                    </button>
+                  )) : (
+                    <div style={{ padding: '10px 12px', fontSize: 11, color: '#64748b' }}>
+                      当前没有命中节点或关系，换一个实体名、关系词或证据关键词再试试。
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <div style={{ display: 'flex', gap: 10, pointerEvents: 'auto' }}>
           {onRefresh && (
@@ -1454,6 +1713,42 @@ export default function GraphPanel({
               ))}
             </div>
           </div>
+          {sourceBreakdownItems.length ? (
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              flexWrap: 'wrap',
+              background: 'rgba(255,255,255,0.92)',
+              border: '1px solid rgba(219,231,243,0.92)',
+              boxShadow: '0 8px 24px rgba(15,23,42,0.05)',
+              borderRadius: 16,
+              padding: '10px 12px',
+              pointerEvents: 'auto',
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#334155', marginRight: 4 }}>来源拆解</div>
+              {sourceBreakdownItems.map((item) => (
+                <div
+                  key={item.label}
+                  style={{
+                    minWidth: 92,
+                    borderRadius: 12,
+                    border: '1px solid rgba(219,231,243,0.92)',
+                    background: 'rgba(248,250,252,0.96)',
+                    padding: '7px 10px',
+                  }}
+                >
+                  <div style={{ fontSize: 10, color: '#64748b', marginBottom: 3 }}>{item.label}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: item.tone }}>{item.value}</div>
+                </div>
+              ))}
+              {graphData?.graph_refresh_error ? (
+                <div style={{ fontSize: 10, color: '#b45309', lineHeight: 1.6, maxWidth: 320 }}>
+                  刷新提示：{graphData.graph_refresh_error}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -1719,6 +2014,12 @@ export default function GraphPanel({
                       片段引用 {((selectedItem.data as any)?.episodes?.length ?? 0)}
                     </span>
                   ) : null}
+                    {(selectedItem.data as any)?.confidence ? (
+                      <DetailBadge label={`置信 ${(Number((selectedItem.data as any).confidence) * 100).toFixed(0)}%`} tone="#7c3aed" />
+                    ) : null}
+                    {(selectedItem.data as any)?.source_kind ? (
+                      <DetailBadge label={getSourceKindLabel(String((selectedItem.data as any).source_kind))} tone="#0f766e" />
+                    ) : null}
                 </div>
                 {((selectedItem.data as any)?.episodes?.length ?? 0) > 0 ? (
                   <div style={{ marginTop: 10 }}>
@@ -1738,6 +2039,39 @@ export default function GraphPanel({
                     </div>
                   </div>
                 ) : null}
+                </div>
+              )}
+              {selectedItem.type === 'node' && (
+                <div style={{
+                  background: '#f8fafc',
+                  padding: '12px 14px',
+                  borderRadius: 10,
+                  marginBottom: 16,
+                  border: '1px solid #dbe7f3',
+                }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#1e293b', lineHeight: 1.6, marginBottom: 8 }}>
+                    {String((selectedItem.data as any)?.name || '未命名节点')}
+                  </div>
+                  {(selectedItem.data as any)?.summary ? (
+                    <div style={{ fontSize: 12, color: '#475569', lineHeight: 1.7 }}>
+                      {String((selectedItem.data as any).summary)}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.7 }}>
+                      当前节点已经进入未来路径主图谱，建议先看下方基础信息，再展开关联关系与来源细节。
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                    {(selectedItem.data as any)?.type ? (
+                      <DetailBadge label={getNodeTypeLabel(String((selectedItem.data as any).type))} tone="#2563eb" />
+                    ) : null}
+                    {(selectedItem.data as any)?.attributes?.source_description ? (
+                      <DetailBadge label={`来源 ${String((selectedItem.data as any).attributes.source_description)}`} tone="#0f766e" />
+                    ) : null}
+                    {(selectedItem.data as any)?.locator_id ? (
+                      <DetailBadge label="已带稳定定位" tone="#7c3aed" />
+                    ) : null}
+                  </div>
                 </div>
               )}
               {selectedItem.type === 'edge' && selectedEdgeEvidenceNodes.length > 0 && (
@@ -1809,11 +2143,24 @@ export default function GraphPanel({
                   ) : null}
                 </div>
               )}
-              {selectedItem.type === 'node' && (selectedItem.data as any)?.name && (
-                <DetailRow label="名称" value={String((selectedItem.data as any).name)} />
-              )}
-              {selectedItem.type === 'node' && (selectedItem.data as any)?.type && (
-                <DetailRow label="类型" value={getNodeTypeLabel(String((selectedItem.data as any).type))} />
+              {selectedItem.type === 'node' && (
+                <>
+                  {(selectedItem.data as any)?.name && (
+                    <DetailRow label="名称" value={String((selectedItem.data as any).name)} />
+                  )}
+                  {(selectedItem.data as any)?.type && (
+                    <DetailRow label="类型" value={getNodeTypeLabel(String((selectedItem.data as any).type))} />
+                  )}
+                  {(selectedItem.data as any)?.locator_id && (
+                    <DetailRow label="定位标识" value={String((selectedItem.data as any).locator_id)} />
+                  )}
+                  {(selectedItem.data as any)?.uuid && (
+                    <DetailRow label="图谱 UUID" value={String((selectedItem.data as any).uuid)} />
+                  )}
+                  {(selectedItem.data as any)?.created_at && (
+                    <DetailRow label="创建时间" value={formatDateTime(String((selectedItem.data as any).created_at))} />
+                  )}
+                </>
               )}
               {selectedItem.type === 'node' && String((selectedItem.data as any)?.type || '') === 'Episode' && (
                 <div style={{
@@ -1888,35 +2235,46 @@ export default function GraphPanel({
                   ) : null}
                 </div>
               )}
-              {selectedItem.type === 'edge' && (selectedItem.data as any)?.type && (
-                <DetailRow label="关系类型" value={EDGE_TYPE_LABELS[String((selectedItem.data as any).type)] || String((selectedItem.data as any).type)} />
-              )}
-              {selectedItem.type === 'edge' && (selectedItem.data as any)?.fact && (
-                <DetailRow label="关系说明" value={String((selectedItem.data as any).fact)} />
-              )}
-              {(selectedItem.data as any)?.properties && Object.keys((selectedItem.data as any).properties).length > 0 && (
-                <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid #f0f0f0' }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: '#666', marginBottom: 8, letterSpacing: '0.05em' }}>核心属性</div>
-                  {Object.entries((selectedItem.data as any).properties).map(([key, value]) => (
-                    <DetailRow key={key} label={String(key)} value={formatPropertyValue(value)} />
-                  ))}
-                </div>
-              )}
-              {(selectedItem.data as any)?.created_at && (
-                <DetailRow label="创建时间" value={formatDateTime(String((selectedItem.data as any).created_at))} />
+              {selectedItem.type === 'edge' && (
+                <>
+                  {(selectedItem.data as any)?.type && (
+                    <DetailRow label="关系类型" value={EDGE_TYPE_LABELS[String((selectedItem.data as any).type)] || String((selectedItem.data as any).type)} />
+                  )}
+                  {(selectedItem.data as any)?.fact && (
+                    <DetailRow label="关系说明" value={String((selectedItem.data as any).fact)} />
+                  )}
+                  {(selectedItem.data as any)?.locator_id && (
+                    <DetailRow label="定位标识" value={String((selectedItem.data as any).locator_id)} />
+                  )}
+                  {(selectedItem.data as any)?.uuid && (
+                    <DetailRow label="图谱 UUID" value={String((selectedItem.data as any).uuid)} />
+                  )}
+                  {(selectedItem.data as any)?.created_at && (
+                    <DetailRow label="创建时间" value={formatDateTime(String((selectedItem.data as any).created_at))} />
+                  )}
+                  {(selectedItem.data as any)?.valid_at && (
+                    <DetailRow label="生效时间" value={formatDateTime(String((selectedItem.data as any).valid_at))} />
+                  )}
+                </>
               )}
               {(selectedItem.data as any)?.labels?.length > 0 && (
-                <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid #f0f0f0' }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: '#666', marginBottom: 8, letterSpacing: '0.05em' }}>标签</div>
+                <InspectorSection title="标签" defaultOpen={false}>
                   <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 6 }}>
                     {(selectedItem.data as any).labels.map((l: string, i: number) => (
                       <span key={i} style={{ padding: '3px 10px', background: '#f5f5f5', border: '1px solid #e0e0e0', borderRadius: 16, fontSize: 11, color: '#555' }}>{getNodeTypeLabel(l)}</span>
                     ))}
                   </div>
-                </div>
+                </InspectorSection>
+              )}
+              {(selectedItem.data as any)?.properties && Object.keys((selectedItem.data as any).properties).length > 0 && (
+                <InspectorSection title="核心属性" defaultOpen={false}>
+                  {Object.entries((selectedItem.data as any).properties).map(([key, value]) => (
+                    <DetailRow key={key} label={String(key)} value={formatPropertyValue(value)} />
+                  ))}
+                </InspectorSection>
               )}
               {selectedItem.type === 'node' && selectedNodeRelations.length > 0 && (
-                <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid #f0f0f0' }}>
+                <InspectorSection title="关联关系" defaultOpen={true}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
                     <div style={{ fontSize: 11, fontWeight: 600, color: '#666', letterSpacing: '0.05em' }}>关联关系</div>
                     <div style={{ fontSize: 10, color: '#94a3b8' }}>点击可切换到关系检查器</div>
@@ -1966,11 +2324,10 @@ export default function GraphPanel({
                       </div>
                     ) : null
                   ))}
-                </div>
+                </InspectorSection>
               )}
               {(selectedItem.data as any)?.episodes?.length > 0 && (
-                <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid #f0f0f0' }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: '#666', marginBottom: 8, letterSpacing: '0.05em' }}>关联片段</div>
+                <InspectorSection title="关联片段" defaultOpen={false}>
                   <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 6 }}>
                     {(selectedItem.data as any).episodes.map((ep: string, i: number) => {
                       const matchedNode = selectedEdgeEvidenceNodes.find((node) => matchEpisodeNode(node as GraphNode, [String(ep)]))
@@ -1995,7 +2352,7 @@ export default function GraphPanel({
                       )
                     })}
                   </div>
-                </div>
+                </InspectorSection>
               )}
             </div>
           )}
