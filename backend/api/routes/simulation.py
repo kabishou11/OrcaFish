@@ -121,6 +121,23 @@ def _persist_run_snapshot(run: dict) -> None:
         json.dump(run, f, ensure_ascii=False, indent=2)
 
 
+def _read_jsonl_rows(path: str) -> list[dict]:
+    rows: list[dict] = []
+    if not os.path.exists(path):
+        return rows
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                parsed = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                rows.append(parsed)
+    return rows
+
+
 def _delete_run_snapshot(sim_id: str) -> None:
     state_path = _run_state_path(sim_id)
     if os.path.exists(state_path):
@@ -1272,16 +1289,12 @@ async def get_run_detail(run_id: str) -> dict:
     actions_file = os.path.join(data_dir, sim_id, "actions.jsonl")
 
     actions = []
-    if os.path.exists(actions_file):
-        with open(actions_file, encoding='utf-8') as f:
-            for line in f:
-                if line.strip():
-                    action = json.loads(line)
-                    agent_meta = _agent_display(str(action.get("agent_id", "")), str(action.get("agent_name", "")))
-                    action["agent_name"] = agent_meta["display_name"]
-                    action["agent_role"] = agent_meta["role"]
-                    action["platform_name"] = agent_meta["platform_name"]
-                    actions.append(action)
+    for action in _read_jsonl_rows(actions_file):
+        agent_meta = _agent_display(str(action.get("agent_id", "")), str(action.get("agent_name", "")))
+        action["agent_name"] = agent_meta["display_name"]
+        action["agent_role"] = agent_meta["role"]
+        action["platform_name"] = agent_meta["platform_name"]
+        actions.append(action)
 
     if not actions and sim_id:
         oasis_status = await _RUNNER.get_status(sim_id)
@@ -2163,6 +2176,7 @@ async def get_run_graph(run_id: str) -> dict:
         "graph_entity_types": graph_metadata.get("graph_entity_types") or derived_entity_types,
     }
     run.update(response_metadata)
+    _persist_run_snapshot(run)
 
     return {
         **response_metadata,
@@ -2347,7 +2361,15 @@ async def get_simulation_report(run_id: str) -> dict:
     graph_fact_source_mode = graph_calibration["source_mode"]
     country_context = run.get("country_context") if isinstance(run.get("country_context"), dict) else {}
     inherited_graph_context = run.get("graph_context") if isinstance(run.get("graph_context"), dict) else {}
-    hero_digest = escape(str((inherited_graph_context.get("selected_digest") or {}).get("title") or "")) if inherited_graph_context else ""
+    selected_digest_payload = {}
+    if inherited_graph_context:
+        if isinstance(inherited_graph_context.get("selected_digest"), dict):
+            selected_digest_payload = inherited_graph_context.get("selected_digest") or {}
+        elif isinstance(inherited_graph_context.get("news_digest"), list) and inherited_graph_context.get("news_digest"):
+            first_digest = inherited_graph_context["news_digest"][0]
+            if isinstance(first_digest, dict):
+                selected_digest_payload = first_digest
+    hero_digest = escape(str(selected_digest_payload.get("title") or "")) if selected_digest_payload else ""
 
     # ── HTML helpers ──────────────────────────────────────────────────────────
     safe_run_id = escape(str(run_id))
@@ -2596,6 +2618,10 @@ async def get_simulation_report(run_id: str) -> dict:
         nodes = inherited_graph_context.get("graph_nodes") if isinstance(inherited_graph_context.get("graph_nodes"), list) else []
         news_digest = inherited_graph_context.get("news_digest") if isinstance(inherited_graph_context.get("news_digest"), list) else []
         selected_digest = inherited_graph_context.get("selected_digest") if isinstance(inherited_graph_context.get("selected_digest"), dict) else {}
+        if not selected_digest and news_digest:
+            first_digest = news_digest[0]
+            if isinstance(first_digest, dict):
+                selected_digest = first_digest
         analysis_stage = escape(str(inherited_graph_context.get("analysis_stage") or "等待研判阶段同步"))
         analysis_quality = escape(str(inherited_graph_context.get("analysis_quality") or "等待质量标记"))
         analysis_summary = escape(str(inherited_graph_context.get("analysis_summary") or "当前还没有继承到议题研判摘要。"))

@@ -174,6 +174,11 @@ function getSectionSummary(text?: string) {
   return text.replace(/^#+\s*/gm, '').replace(/\s+/g, ' ').trim().slice(0, 140) || '该板块已完成。'
 }
 
+function pickDefaultDigest(result: AnalysisResult | null) {
+  const digest = result?.news_digest ?? []
+  return digest.length ? digest[0] : null
+}
+
 function escapeHtml(text: string) {
   return text
     .replace(/&/g, '&amp;')
@@ -687,6 +692,7 @@ export default function AnalysisPage() {
   const handleSendToSimulation = () => {
     const topic = activeQuery || '议题预测'
     const seed = result?.final_report?.trim() || result?.query_report?.trim() || stripHtml(result?.html_report) || topic
+    const defaultDigest = pickDefaultDigest(result)
     setSimulationDraft({
       name: `${topic} 未来预测`,
       seed_content: seed,
@@ -703,6 +709,7 @@ export default function AnalysisPage() {
         analysis_quality: qualityTone.text,
         analysis_summary: result?.ui_message ?? result?.degraded_reason ?? getSectionSummary(result?.final_report ?? result?.query_report ?? ''),
         news_digest: result?.news_digest ?? [],
+        selected_digest: defaultDigest,
         graph_edges: result?.graph_edges ?? [],
         graph_nodes: result?.graph_nodes ?? [],
       },

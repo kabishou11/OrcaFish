@@ -119,12 +119,20 @@ async def _run_smoke() -> None:
                     "graph_source_mode": "remote_search",
                     "graph_queries": ["伊朗 冲突"],
                     "graph_facts": ["伊朗相关议题正在升温"],
+                    "selected_digest": {
+                        "title": "伊朗局势在过去24小时内持续升温",
+                        "summary": "多源监控显示外交与安全相关叙事同步升高。",
+                        "source": "OrcaFish Monitor",
+                        "country": "IR",
+                        "signal_type": "conflict",
+                    },
                 },
             )
         )
         assert run["status"] == "created"
         assert run["country_context"]["iso"] == "IR"
         assert run["graph_context"]["graph_id"] == "analysis-graph-1"
+        assert run["graph_context"]["selected_digest"]["title"] == "伊朗局势在过去24小时内持续升温"
 
         status = await get_run_status(run["run_id"])
         assert status["status"] == "created"
@@ -147,6 +155,8 @@ async def _run_smoke() -> None:
         assert "analysis-graph-1" in report["html_content"]
         assert "继承关系" in report["html_content"]
         assert "继承节点" in report["html_content"]
+        assert "当前派生来源" in report["html_content"]
+        assert "伊朗局势在过去24小时内持续升温" in report["html_content"]
 
         original_seed = run["seed_content"]
         _run_registry[run["run_id"]]["seed_content"] = "tampered-seed"
@@ -170,6 +180,25 @@ async def _run_smoke() -> None:
         assert captured["enable_reddit"] is True
         assert captured["country_context"]["iso"] == "IR"
         assert captured["graph_context"]["graph_id"] == "analysis-graph-1"
+        assert captured["graph_context"]["selected_digest"]["title"] == "伊朗局势在过去24小时内持续升温"
+
+        broken_run = await create_run(
+            SimulationCreateRequest(
+                name="损坏动作日志测试",
+                seed_content="验证详情接口要忽略半截 json 行。",
+                simulation_requirement="即使动作日志尾部损坏也要能正常返回详情。",
+                max_rounds=2,
+            )
+        )
+        broken_actions_path = PROJECT_ROOT / "backend" / "data" / "simulations" / broken_run["simulation_id"] / "actions.jsonl"
+        broken_actions_path.parent.mkdir(parents=True, exist_ok=True)
+        broken_actions_path.write_text(
+            '{"id":"ok-1","agent_id":"agent_tw_1","agent_name":"agent_tw_1","platform":"twitter","action_args":{},"round_num":1}\n'
+            '{"id":"broken","agent_id":"agent_tw_2"',
+            encoding="utf-8",
+        )
+        broken_detail = await get_run_detail(broken_run["run_id"])
+        assert len(broken_detail["all_actions"]) == 1
 
         toggle_run = await create_run(
             SimulationCreateRequest(

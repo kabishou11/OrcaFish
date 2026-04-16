@@ -136,7 +136,7 @@ class GraphBuilder:
             "node_count": len(nodes),
             "edge_count": len(edges),
             "entity_types": sorted(entity_types),
-            "source_mode": "remote_nodes_edges",
+            "source_mode": "snapshot",
         }
 
     def add_text_batch(self, graph_id: str, text_chunks: list[str]) -> list[str]:
