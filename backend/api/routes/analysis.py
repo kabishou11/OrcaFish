@@ -1,6 +1,8 @@
 from __future__ import annotations
 """OrcaFish Analysis API Routes — Multi-Agent Team Orchestration"""
 import asyncio
+import json
+import os
 import uuid
 import re
 from html import escape
@@ -46,6 +48,38 @@ _AGENT_LABELS = {
 _ANALYSIS_GRAPH_TOOLS = ZepTools()
 _ANALYSIS_LLM_TIMEOUT_SECONDS = 30
 _ANALYSIS_LLM_MAX_RETRIES = 1
+
+
+def _analysis_tasks_dir() -> str:
+    return os.path.join(os.path.dirname(__file__), "..", "..", "data", "analysis_tasks")
+
+
+def _analysis_task_path(task_id: str) -> str:
+    return os.path.join(_analysis_tasks_dir(), f"{task_id}.json")
+
+
+def _persist_analysis_task(task: AnalysisTask) -> None:
+    os.makedirs(_analysis_tasks_dir(), exist_ok=True)
+    with open(_analysis_task_path(task.task_id), "w", encoding="utf-8") as f:
+        json.dump(task.model_dump(mode="json"), f, ensure_ascii=False, indent=2)
+
+
+def _load_analysis_task(task_id: str) -> AnalysisTask | None:
+    path = _analysis_task_path(task_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+        task = AnalysisTask.model_validate(payload)
+    except Exception:
+        return None
+    _task_registry[task_id] = task
+    return task
+
+
+def _get_task(task_id: str) -> AnalysisTask | None:
+    return _task_registry.get(task_id) or _load_analysis_task(task_id)
 
 
 def _extract_query_terms(query: str) -> list[str]:
@@ -478,6 +512,7 @@ def _update_task_snapshot(
     if final_report:
         task.final_report = final_report
     task.last_update_at = datetime.now(UTC)
+    _persist_analysis_task(task)
 
 
 def _build_agent_fallback_report(
@@ -736,7 +771,7 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
     from backend.analysis.agents.media import MediaAgent
     from backend.analysis.report.agent import ReportAgent
 
-    task = _task_registry.get(task_id)
+    task = _get_task(task_id)
     if not task:
         return {}
 
@@ -1151,6 +1186,7 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
             )
         task.last_update_at = datetime.now(UTC)
         task.completed_at = datetime.now(UTC)
+        _persist_analysis_task(task)
     return results
 
 
@@ -1243,6 +1279,7 @@ async def trigger_analysis(req: AnalysisRequest) -> dict:
         task.ui_message = f"已先接入 {len(warm_digest)} 条监控摘要，多代理研判结果会继续陆续到达。"
 
     _task_registry[task_id] = task
+    _persist_analysis_task(task)
 
     asyncio.create_task(_run_agent_team(task_id, req.query))
 
@@ -1273,7 +1310,7 @@ async def trigger_analysis(req: AnalysisRequest) -> dict:
 @router.get("/{task_id}")
 async def get_analysis_task(task_id: str) -> dict:
     """Get analysis task status and results"""
-    task = _task_registry.get(task_id)
+    task = _get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return {

@@ -21,7 +21,7 @@ async def _run_smoke() -> None:
     from backend.main import health_check
     from backend.api.routes.intelligence import get_cii_scores, get_wm_status, get_news, get_country_context, start_wm, stop_wm
     from backend.api.routes.pipeline import list_pipelines
-    from backend.api.routes.analysis import trigger_analysis, get_analysis_task, AnalysisRequest
+    from backend.api.routes.analysis import trigger_analysis, get_analysis_task, AnalysisRequest, _task_registry
     from backend.api.routes.graph import search_graph as search_graph_route
     from backend.api.routes.simulation import (
         _run_registry,
@@ -100,6 +100,10 @@ async def _run_smoke() -> None:
 
         analysis_status = await get_analysis_task(analysis["task_id"])
         assert analysis_status["status"] == "running"
+        _task_registry.pop(analysis["task_id"], None)
+        restored_analysis_status = await get_analysis_task(analysis["task_id"])
+        assert restored_analysis_status["task_id"] == analysis["task_id"]
+        assert restored_analysis_status["status"] == "running"
 
         malicious_title = '<script>alert("xss")</script> 测试议题'
         run = await create_run(

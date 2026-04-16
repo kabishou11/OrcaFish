@@ -21,6 +21,7 @@ _wm_focal_points: List[FocalPoint] = []
 _wm_monitor_snapshot_cache: Optional[dict] = None
 _wm_cii_payload_cache: Optional[dict] = None
 _WM_AGENT_TIMEOUT_SECONDS = 8.0
+_wm_lock = asyncio.Lock()
 
 
 def _normalize_iso(iso: str) -> str:
@@ -423,37 +424,60 @@ async def get_wm_status() -> dict:
 async def start_wm() -> dict:
     """Start the World Monitor background polling loop"""
     global _wm_running, _wm_task, _wm_last_poll
-    if _wm_running:
-        return {"status": "already_running"}
-    _wm_running = True
-    _wm_last_poll = datetime.now(UTC)
-    _refresh_monitor_snapshot_cache()
-    _refresh_cii_payload_cache()
-    await _refresh_world_monitor_once()
+    async with _wm_lock:
+        if _wm_running and _wm_task and not _wm_task.done():
+            return {"status": "already_running"}
+        try:
+            await _refresh_world_monitor_once()
+        except Exception as exc:
+            _wm_running = False
+            _wm_task = None
+            _refresh_monitor_snapshot_cache()
+            _refresh_cii_payload_cache()
+            raise HTTPException(status_code=503, detail=f"世界监控启动失败：{exc}") from exc
 
-    async def poll_loop():
-        while _wm_running:
+        _wm_running = True
+        _wm_last_poll = datetime.now(UTC)
+        _refresh_monitor_snapshot_cache()
+        _refresh_cii_payload_cache()
+
+        async def poll_loop():
+            global _wm_running, _wm_task
             try:
-                await _refresh_world_monitor_once()
-            except Exception:
-                pass
-            await asyncio.sleep(15)
+                while _wm_running:
+                    try:
+                        await _refresh_world_monitor_once()
+                    except Exception:
+                        pass
+                    await asyncio.sleep(15)
+            finally:
+                if _wm_task and _wm_task.done():
+                    _wm_task = None
+                if not _wm_running:
+                    _refresh_monitor_snapshot_cache()
+                    _refresh_cii_payload_cache()
 
-    _wm_task = asyncio.create_task(poll_loop())
-    return {"status": "started"}
+        _wm_task = asyncio.create_task(poll_loop())
+        return {"status": "started"}
 
 
 @router.post("/world-monitor/stop")
 async def stop_wm() -> dict:
     """Stop the World Monitor background polling loop"""
     global _wm_running, _wm_task
-    _wm_running = False
-    if _wm_task:
-        _wm_task.cancel()
+    async with _wm_lock:
+        _wm_running = False
+        task = _wm_task
         _wm_task = None
-    _refresh_monitor_snapshot_cache()
-    _refresh_cii_payload_cache()
-    return {"status": "stopped"}
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        _refresh_monitor_snapshot_cache()
+        _refresh_cii_payload_cache()
+        return {"status": "stopped"}
 
 
 @router.get("/cii")
