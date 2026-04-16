@@ -2593,9 +2593,28 @@ async def get_simulation_report(run_id: str) -> dict:
         facts = inherited_graph_context.get("graph_facts") if isinstance(inherited_graph_context.get("graph_facts"), list) else []
         edges = inherited_graph_context.get("graph_edges") if isinstance(inherited_graph_context.get("graph_edges"), list) else []
         nodes = inherited_graph_context.get("graph_nodes") if isinstance(inherited_graph_context.get("graph_nodes"), list) else []
+        news_digest = inherited_graph_context.get("news_digest") if isinstance(inherited_graph_context.get("news_digest"), list) else []
+        analysis_stage = escape(str(inherited_graph_context.get("analysis_stage") or "等待研判阶段同步"))
+        analysis_quality = escape(str(inherited_graph_context.get("analysis_quality") or "等待质量标记"))
+        analysis_summary = escape(str(inherited_graph_context.get("analysis_summary") or "当前还没有继承到议题研判摘要。"))
         graph_id = escape(str(inherited_graph_context.get("graph_id") or "未命名图谱"))
         query_html = _html_list([escape(str(item)) for item in queries[:5]], "没有继承到检索词")
         fact_html = _html_list([escape(str(item)) for item in facts[:4]], "没有继承到事实摘录")
+        digest_items = []
+        for item in news_digest[:4]:
+            if not isinstance(item, dict):
+                continue
+            title = escape(str(item.get("title") or "研判监控摘要"))
+            summary = escape(str(item.get("summary") or ""))
+            meta_bits = [str(item.get("source") or ""), str(item.get("country") or ""), str(item.get("signal_type") or "")]
+            meta = " · ".join(escape(bit) for bit in meta_bits if bit)
+            digest_items.append(
+                "<li>"
+                f"<strong>{title}</strong>"
+                f"{f'<br><span class=\"hint\">{summary}</span>' if summary else ''}"
+                f"{f'<br><span class=\"hint\">{meta}</span>' if meta else ''}"
+                "</li>"
+            )
         edge_rows = []
         for edge in edges[:6]:
             edge_rows.append(
@@ -2617,17 +2636,21 @@ async def get_simulation_report(run_id: str) -> dict:
             )
         edge_table = "".join(edge_rows) if edge_rows else "<tr><td colspan='4' style='color:#94a3b8'>没有继承到关系结构</td></tr>"
         node_table = "".join(node_rows) if node_rows else "<tr><td colspan='3' style='color:#94a3b8'>没有继承到节点结构</td></tr>"
+        digest_html = "".join(digest_items) if digest_items else "<li>没有继承到研判首屏摘要</li>"
         return (
             "<div>"
             "<h2>继承的图谱校准</h2>"
             f"<p><span class='badge badge-run'>{escape(inherited_graph_mode_label)}</span> "
             f"<span class='badge badge-warn'>图谱 ID {graph_id}</span></p>"
             f"<p class='hint'>这部分来自议题研判阶段的结构化校准，用来说明本次未来预测一开始沿着什么节点、关系和事实进入图谱。</p>"
+            f"<p class='hint'>当前阶段：{analysis_stage} · 当前质量：{analysis_quality}</p>"
+            f"<p>{analysis_summary}</p>"
             f"<p class='hint'>继承了 {len(queries)} 个检索词、{len(facts)} 条事实、{len(edges)} 条关系、{len(nodes)} 个节点。</p>"
             "<div class='grid-2'>"
             f"<div><h2>继承检索词</h2><ul>{query_html}</ul></div>"
             f"<div><h2>继承事实</h2><ul>{fact_html}</ul></div>"
             "</div>"
+            f"<div class='section-card'><h2>继承的研判首屏摘要</h2><ul>{digest_html}</ul></div>"
             "<div class='grid-2'>"
             f"<div><h2>继承关系</h2><table><tr><th>源节点</th><th>关系</th><th>目标节点</th><th>说明</th></tr>{edge_table}</table></div>"
             f"<div><h2>继承节点</h2><table><tr><th>节点</th><th>类型</th><th>摘要</th></tr>{node_table}</table></div>"

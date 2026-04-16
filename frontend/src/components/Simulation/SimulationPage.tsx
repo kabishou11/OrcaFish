@@ -745,6 +745,49 @@ function ReportViewer({
                         <strong style={{ color: 'var(--text-primary)' }}>继承事实：</strong>{graphContext.graph_facts.slice(0, 2).join('；')}
                       </div>
                     ) : null}
+                    {graphContext.analysis_summary ? (
+                      <div style={{ marginTop: 10, fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.75 }}>
+                        <strong style={{ color: 'var(--text-primary)' }}>研判摘要：</strong>{graphContext.analysis_summary}
+                      </div>
+                    ) : null}
+                    {(graphContext.analysis_stage || graphContext.analysis_quality) ? (
+                      <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {graphContext.analysis_stage ? (
+                          <span style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.05)', border: '1px solid rgba(37,99,235,0.1)' }}>
+                            当前阶段 {graphContext.analysis_stage}
+                          </span>
+                        ) : null}
+                        {graphContext.analysis_quality ? (
+                          <span style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', padding: '4px 8px', borderRadius: 999, background: 'rgba(22,163,74,0.05)', border: '1px solid rgba(22,163,74,0.1)' }}>
+                            当前质量 {graphContext.analysis_quality}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {graphContext.news_digest?.length ? (
+                      <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+                        <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
+                          继承的研判首屏摘要
+                        </div>
+                        {graphContext.news_digest.slice(0, 3).map((item, index) => (
+                          <div key={`${item.title || 'inherited-digest'}-${index}`} style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(124,58,237,0.1)', background: 'rgba(255,255,255,0.92)' }}>
+                            <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                              {item.title || '研判监控摘要'}
+                            </div>
+                            {item.summary ? (
+                              <div style={{ marginTop: 4, fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                                {item.summary}
+                              </div>
+                            ) : null}
+                            <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: '0.64rem', color: 'var(--text-muted)' }}>
+                              {item.source ? <span>{item.source}</span> : null}
+                              {item.country ? <span>{item.country}</span> : null}
+                              {item.signal_type ? <span>{item.signal_type}</span> : null}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                     {(topInheritedEdges.length > 0 || topInheritedNodes.length > 0) ? (
                       <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
                         <div style={{ display: 'grid', gap: 8 }}>
@@ -1276,6 +1319,15 @@ export default function SimulationPage() {
       topNewsDigest: (draftGraphContext.news_digest ?? []).slice(0, 3),
     }
   }, [draftGraphContext])
+  const describeRunSourceContext = (run: SimulationRun) => {
+    const graphContext = run.graph_context
+    return {
+      stage: graphContext?.analysis_stage || '',
+      quality: graphContext?.analysis_quality || '',
+      summary: graphContext?.analysis_summary || '',
+      digestTitle: graphContext?.news_digest?.[0]?.title || '',
+    }
+  }
   const estimateRemaining = () => {
     if (!selectedRun) return '等待创建预测记录'
     if (selectedRun.status === 'completed' && selectedRun.duration_ms) {
@@ -1713,7 +1765,9 @@ export default function SimulationPage() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)', padding: 'var(--sp-2)' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: runsExpanded ? 360 : undefined, overflowY: runsExpanded ? 'auto' : undefined, paddingRight: runsExpanded ? 4 : 0 }}>
-                  {visibleRuns.map(run => (
+                  {visibleRuns.map(run => {
+                    const sourceContext = describeRunSourceContext(run)
+                    return (
                     <div key={run.run_id} onClick={() => setSelectedRun(run)} style={{
                       padding: 'var(--sp-3)', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
                       border: `1px solid ${selectedRun?.run_id === run.run_id ? 'var(--accent)' : 'transparent'}`,
@@ -1731,13 +1785,37 @@ export default function SimulationPage() {
                         <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                           {run.rounds_completed} 轮 · {run.convergence_achieved ? '已收敛' : '未收敛'}
                         </div>
+                        {(sourceContext.stage || sourceContext.quality) ? (
+                          <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {sourceContext.stage ? (
+                              <span style={{ padding: '2px 7px', borderRadius: 999, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)', fontSize: '0.62rem', color: 'var(--text-secondary)' }}>
+                                {sourceContext.stage}
+                              </span>
+                            ) : null}
+                            {sourceContext.quality ? (
+                              <span style={{ padding: '2px 7px', borderRadius: 999, background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.12)', fontSize: '0.62rem', color: 'var(--text-secondary)' }}>
+                                {sourceContext.quality}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        {sourceContext.digestTitle ? (
+                          <div style={{ marginTop: 6, fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.55 }}>
+                            {sourceContext.digestTitle}
+                          </div>
+                        ) : null}
+                        {sourceContext.summary && !sourceContext.digestTitle ? (
+                          <div style={{ marginTop: 6, fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.55 }}>
+                            {sourceContext.summary}
+                          </div>
+                        ) : null}
                       </div>
                       <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); handleDelete(run.run_id) }}
                         style={{ color: 'var(--text-muted)', padding: '2px 6px' }}>
                         <CloseIcon />
                       </button>
                     </div>
-                  ))}
+                  )})}
                 </div>
                 {hasCollapsedRuns ? (
                   <button
