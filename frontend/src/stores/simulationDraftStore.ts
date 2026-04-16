@@ -23,6 +23,14 @@ export interface SimulationDraft {
       published_at?: string
       signal_type?: string
     }>
+    selected_digest?: {
+      title?: string
+      summary?: string
+      source?: string
+      country?: string
+      published_at?: string
+      signal_type?: string
+    } | null
     graph_edges?: Array<{
       source?: string
       target?: string

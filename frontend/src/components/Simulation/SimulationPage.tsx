@@ -81,6 +81,53 @@ function getGraphPayloadSignature(data: GraphPayload): string {
   return JSON.stringify(data)
 }
 
+function getPredictionNextStep(run: SimulationRun | null, graphSummary: {
+  selectedDigest?: DraftDigestItem | null
+  factCount: number
+  edgeCount: number
+} | null) {
+  if (!run) {
+    return {
+      title: '先创建一条未来预测记录',
+      hint: '把议题研判或全球观测带来的上下文放进创建区，先形成一条可追踪的预测记录。',
+    }
+  }
+  if (run.status === 'created') {
+    return {
+      title: '下一步先启动未来预测',
+      hint: graphSummary?.selectedDigest?.title
+        ? `建议先围绕“${graphSummary.selectedDigest.title}”启动，再观察图谱和行动流如何展开。`
+        : '记录已经就绪，启动后就能看到图谱、行动流和预测报告逐步成形。',
+    }
+  }
+  if (run.status === 'running') {
+    return {
+      title: '下一步先盯关键关系与行动流',
+      hint: graphSummary && (graphSummary.factCount > 0 || graphSummary.edgeCount > 0)
+        ? `当前已继承 ${graphSummary.factCount} 条事实、${graphSummary.edgeCount} 条关系，建议先核对右侧图谱摘要，再回主图谱看路径如何放大。`
+        : '建议先看右侧工作台里的关系摘要，再回主图谱核对路径和证据片段。',
+    }
+  }
+  if (run.status === 'completed') {
+    return {
+      title: '下一步阅读报告并回看主图谱',
+      hint: graphSummary?.selectedDigest?.title
+        ? `这条预测已经完成，建议先读报告，再回主图谱核对“${graphSummary.selectedDigest.title}”是如何演化成当前路径的。`
+        : '这条预测已经完成，建议先读报告，再回主图谱核对关键关系与证据链。',
+    }
+  }
+  if (run.status === 'paused') {
+    return {
+      title: '下一步决定是否继续推进',
+      hint: '当前记录已暂停，你可以先核对来源摘要和图谱关系，再决定是否重新启动或另起一条预测。',
+    }
+  }
+  return {
+    title: '下一步先核对来源与状态',
+    hint: '先确认来源摘要、图谱校准和运行状态是否一致，再继续处理这条未来预测。',
+  }
+}
+
 
 // ── SimulationStreamPanel ──────────────────────────────────────────────────────
 interface SimAction {
@@ -987,8 +1034,8 @@ export default function SimulationPage() {
     draftPayload?.source_graph
   const runCountryContext = (selectedRun?.country_context as CountryContextDraftSummary | null | undefined) ?? null
   const runGraphContext = (selectedRun?.graph_context as DraftGraphContextSummary | null | undefined) ?? null
-  const draftCountryContext = incomingCountryContext ?? persistedCountryContext ?? runCountryContext
-  const draftGraphContext = incomingGraphContext ?? persistedGraphContext ?? runGraphContext
+  const draftCountryContext = incomingCountryContext ?? runCountryContext ?? persistedCountryContext
+  const draftGraphContext = incomingGraphContext ?? runGraphContext ?? persistedGraphContext
 
   const hasCountryContext = Boolean(draftCountryContext?.iso)
   const draftCountryName = draftCountryContext?.country_name || draftCountryContext?.name || draftCountryContext?.iso
@@ -1016,6 +1063,12 @@ export default function SimulationPage() {
   }, [incomingCountryContext])
 
   useEffect(() => {
+    if (!incomingCountryContext && runCountryContext?.iso) {
+      setPersistedCountryContext(runCountryContext)
+    }
+  }, [incomingCountryContext, runCountryContext])
+
+  useEffect(() => {
     if (incomingGraphContext && (
       incomingGraphContext.graph_id
       || incomingGraphContext.graph_facts?.length
@@ -1025,6 +1078,18 @@ export default function SimulationPage() {
       setPersistedGraphContext(incomingGraphContext)
     }
   }, [incomingGraphContext])
+
+  useEffect(() => {
+    if (!incomingGraphContext && runGraphContext && (
+      runGraphContext.graph_id
+      || runGraphContext.graph_facts?.length
+      || runGraphContext.graph_edges?.length
+      || runGraphContext.graph_nodes?.length
+      || runGraphContext.selected_digest?.title
+    )) {
+      setPersistedGraphContext(runGraphContext)
+    }
+  }, [incomingGraphContext, runGraphContext])
 
   // Fetch graph data when selected run changes or prediction meaningfully advances
   useEffect(() => {
@@ -1367,6 +1432,10 @@ export default function SimulationPage() {
       topNewsDigest: (draftGraphContext.news_digest ?? []).slice(0, 3),
     }
   }, [draftGraphContext])
+  const predictionNextStep = useMemo(
+    () => getPredictionNextStep(selectedRun, graphCalibrationSummary),
+    [graphCalibrationSummary, selectedRun],
+  )
   const describeRunSourceContext = (run: SimulationRun) => {
     const graphContext = run.graph_context
     return {
@@ -2350,6 +2419,25 @@ export default function SimulationPage() {
                   : selectedRun.status === 'completed'
                     ? `${selectedRun.convergence_achieved ? '未来路径已趋稳' : '未来路径仍有波动'}，现在可以阅读报告并回看图谱。`
                     : '先启动这条记录，再观察图谱、行动流和预测报告逐步成形。'}
+              </div>
+              <div style={{
+                marginTop: 12,
+                padding: '10px 12px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid rgba(37,99,235,0.12)',
+                background: 'rgba(255,255,255,0.94)',
+                display: 'grid',
+                gap: 6,
+              }}>
+                <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
+                  下一步建议
+                </div>
+                <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                  {predictionNextStep.title}
+                </div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                  {predictionNextStep.hint}
+                </div>
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
                 <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>

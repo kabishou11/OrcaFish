@@ -21,7 +21,7 @@ async def _run_smoke() -> None:
     from backend.main import health_check
     from backend.api.routes.intelligence import get_cii_scores, get_wm_status, get_news, get_country_context, start_wm, stop_wm
     from backend.api.routes.pipeline import list_pipelines
-    from backend.api.routes.analysis import trigger_analysis, get_analysis_task, AnalysisRequest
+    from backend.api.routes.analysis import trigger_analysis, get_analysis_task, AnalysisRequest, _task_registry
     from backend.api.routes.graph import search_graph as search_graph_route
     from backend.api.routes.simulation import (
         _run_registry,
@@ -100,6 +100,10 @@ async def _run_smoke() -> None:
 
         analysis_status = await get_analysis_task(analysis["task_id"])
         assert analysis_status["status"] == "running"
+        _task_registry.pop(analysis["task_id"], None)
+        restored_analysis_status = await get_analysis_task(analysis["task_id"])
+        assert restored_analysis_status["task_id"] == analysis["task_id"]
+        assert restored_analysis_status["status"] == "running"
 
         malicious_title = '<script>alert("xss")</script> 测试议题'
         run = await create_run(
@@ -119,12 +123,20 @@ async def _run_smoke() -> None:
                     "graph_source_mode": "remote_search",
                     "graph_queries": ["伊朗 冲突"],
                     "graph_facts": ["伊朗相关议题正在升温"],
+                    "selected_digest": {
+                        "title": "伊朗局势在过去24小时内持续升温",
+                        "summary": "多源监控显示外交与安全相关叙事同步升高。",
+                        "source": "OrcaFish Monitor",
+                        "country": "IR",
+                        "signal_type": "conflict",
+                    },
                 },
             )
         )
         assert run["status"] == "created"
         assert run["country_context"]["iso"] == "IR"
         assert run["graph_context"]["graph_id"] == "analysis-graph-1"
+        assert run["graph_context"]["selected_digest"]["title"] == "伊朗局势在过去24小时内持续升温"
 
         status = await get_run_status(run["run_id"])
         assert status["status"] == "created"
@@ -147,6 +159,8 @@ async def _run_smoke() -> None:
         assert "analysis-graph-1" in report["html_content"]
         assert "继承关系" in report["html_content"]
         assert "继承节点" in report["html_content"]
+        assert "当前派生来源" in report["html_content"]
+        assert "伊朗局势在过去24小时内持续升温" in report["html_content"]
 
         original_seed = run["seed_content"]
         _run_registry[run["run_id"]]["seed_content"] = "tampered-seed"
@@ -170,6 +184,25 @@ async def _run_smoke() -> None:
         assert captured["enable_reddit"] is True
         assert captured["country_context"]["iso"] == "IR"
         assert captured["graph_context"]["graph_id"] == "analysis-graph-1"
+        assert captured["graph_context"]["selected_digest"]["title"] == "伊朗局势在过去24小时内持续升温"
+
+        broken_run = await create_run(
+            SimulationCreateRequest(
+                name="损坏动作日志测试",
+                seed_content="验证详情接口要忽略半截 json 行。",
+                simulation_requirement="即使动作日志尾部损坏也要能正常返回详情。",
+                max_rounds=2,
+            )
+        )
+        broken_actions_path = PROJECT_ROOT / "backend" / "data" / "simulations" / broken_run["simulation_id"] / "actions.jsonl"
+        broken_actions_path.parent.mkdir(parents=True, exist_ok=True)
+        broken_actions_path.write_text(
+            '{"id":"ok-1","agent_id":"agent_tw_1","agent_name":"agent_tw_1","platform":"twitter","action_args":{},"round_num":1}\n'
+            '{"id":"broken","agent_id":"agent_tw_2"',
+            encoding="utf-8",
+        )
+        broken_detail = await get_run_detail(broken_run["run_id"])
+        assert len(broken_detail["all_actions"]) == 1
 
         toggle_run = await create_run(
             SimulationCreateRequest(
@@ -718,6 +751,87 @@ async def _assert_degraded_analysis_html_keeps_real_source_facts() -> None:
 
 def test_degraded_analysis_html_keeps_real_source_facts() -> None:
     asyncio.run(_assert_degraded_analysis_html_keeps_real_source_facts())
+
+
+async def _assert_report_render_fallback_marks_analysis_degraded() -> None:
+    from backend.api.routes import analysis as analysis_route
+    from backend.models.analysis import AnalysisTask
+
+    task_id = f"task_report_render_fallback_{uuid.uuid4().hex[:8]}"
+    query = "霍尔木兹海峡风险外溢"
+    task = AnalysisTask(
+        task_id=task_id,
+        query=query,
+        status="running",
+        progress=0,
+        agent_status={"query": "queued", "media": "queued", "insight": "queued", "report": "queued"},
+        agent_metrics=analysis_route._build_initial_agent_metrics(),
+        matched_terms=analysis_route._extract_query_terms(query),
+        sections=analysis_route._build_initial_sections(query, analysis_route._extract_query_terms(query)),
+        timeline=[],
+        ui_message="测试中",
+    )
+    analysis_route._task_registry[task_id] = task
+
+    class FakeLLMClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    async def fast_research(label: str):
+        await asyncio.sleep(0.01)
+        return SimpleNamespace(final_report=f"{label} live report")
+
+    class FakeQueryAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def research(self, query: str):
+            return await fast_research("query")
+
+    class FakeMediaAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def research(self, query: str):
+            return await fast_research("media")
+
+    class FakeInsightAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def research(self, query: str):
+            return await fast_research("insight")
+
+    class FakeReportAgent:
+        def __init__(self, llm):
+            self.llm = llm
+
+        async def generate(self, **kwargs):
+            await asyncio.sleep(0.01)
+            return "报告生成遇到问题，当前无法输出完整版面。"
+
+    with patch("backend.llm.client.LLMClient", FakeLLMClient), \
+        patch("backend.analysis.agents.query.QueryAgent", FakeQueryAgent), \
+        patch("backend.analysis.agents.media.MediaAgent", FakeMediaAgent), \
+        patch("backend.analysis.agents.insight.InsightAgent", FakeInsightAgent), \
+        patch("backend.analysis.report.agent.ReportAgent", FakeReportAgent), \
+        patch("backend.api.routes.analysis._build_fallback_news_digest", return_value=[]):
+        await analysis_route._run_agent_team(task_id, query)
+
+    updated_task = analysis_route._task_registry[task_id]
+    try:
+        assert updated_task.status == "degraded"
+        assert updated_task.data_quality == "degraded"
+        assert updated_task.agent_status["report"] == "fallback"
+        assert updated_task.agent_metrics["report"].status == "fallback"
+        assert "降级研判版本" in (updated_task.ui_message or "")
+        assert "报告生成器返回了不可用内容" in (updated_task.degraded_reason or "")
+    finally:
+        analysis_route._task_registry.pop(task_id, None)
+
+
+def test_report_render_fallback_marks_analysis_degraded() -> None:
+    asyncio.run(_assert_report_render_fallback_marks_analysis_degraded())
 
 
 async def _assert_delete_run_stops_runner() -> None:

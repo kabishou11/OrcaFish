@@ -1,6 +1,8 @@
 from __future__ import annotations
 """OrcaFish Analysis API Routes — Multi-Agent Team Orchestration"""
 import asyncio
+import json
+import os
 import uuid
 import re
 from html import escape
@@ -46,6 +48,38 @@ _AGENT_LABELS = {
 _ANALYSIS_GRAPH_TOOLS = ZepTools()
 _ANALYSIS_LLM_TIMEOUT_SECONDS = 30
 _ANALYSIS_LLM_MAX_RETRIES = 1
+
+
+def _analysis_tasks_dir() -> str:
+    return os.path.join(os.path.dirname(__file__), "..", "..", "data", "analysis_tasks")
+
+
+def _analysis_task_path(task_id: str) -> str:
+    return os.path.join(_analysis_tasks_dir(), f"{task_id}.json")
+
+
+def _persist_analysis_task(task: AnalysisTask) -> None:
+    os.makedirs(_analysis_tasks_dir(), exist_ok=True)
+    with open(_analysis_task_path(task.task_id), "w", encoding="utf-8") as f:
+        json.dump(task.model_dump(mode="json"), f, ensure_ascii=False, indent=2)
+
+
+def _load_analysis_task(task_id: str) -> AnalysisTask | None:
+    path = _analysis_task_path(task_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+        task = AnalysisTask.model_validate(payload)
+    except Exception:
+        return None
+    _task_registry[task_id] = task
+    return task
+
+
+def _get_task(task_id: str) -> AnalysisTask | None:
+    return _task_registry.get(task_id) or _load_analysis_task(task_id)
 
 
 def _extract_query_terms(query: str) -> list[str]:
@@ -368,7 +402,7 @@ def _build_sections(
             order=4,
             status=final_status,
             summary=_strip_md(final_report)[:180] if final_report else "综合结论仍在整理三路结果与监控摘要。",
-            content=final_report or "",
+            content="" if current_status == "assembling" else final_report or "",
             source_count=source_counts.get("final", 0) if final_report else 0,
             fallback_used=current_status == "degraded",
             updated_at=datetime.now(UTC),
@@ -478,6 +512,7 @@ def _update_task_snapshot(
     if final_report:
         task.final_report = final_report
     task.last_update_at = datetime.now(UTC)
+    _persist_analysis_task(task)
 
 
 def _build_agent_fallback_report(
@@ -736,7 +771,7 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
     from backend.analysis.agents.media import MediaAgent
     from backend.analysis.report.agent import ReportAgent
 
-    task = _task_registry.get(task_id)
+    task = _get_task(task_id)
     if not task:
         return {}
 
@@ -1058,6 +1093,12 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
 
     # ── Stage 3: Generate final HTML report ───────────────────────────
     fallback_total = sum(1 for used in fallback_map.values() if used)
+    primary_source_gap = any(
+        bool(fallback_map.get(key)) and source_counts.get(key, 0) == 0
+        for key in ("query", "media", "insight")
+    )
+    report_render_fallback = False
+    report_render_reason = ""
     should_skip_report_llm = fallback_total >= 2
     if should_skip_report_llm:
         if task:
@@ -1071,6 +1112,8 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
                 ),
             )
             task.html_report = _render_fallback_html(query, merged, news_digest, merged_source_facts)
+        report_render_fallback = True
+        report_render_reason = "多路代理体已回退到观察摘要，报告改用快速排版模式。"
     else:
         report_agent = ReportAgent(report_llm)
         if task:
@@ -1097,38 +1140,66 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
             )
             if _looks_like_failure_text(html):
                 html = _render_fallback_html(query, merged, news_digest)
+                report_render_fallback = True
+                report_render_reason = "报告生成器返回了不可用内容，已切换为结构化降级排版。"
             if task:
                 task.html_report = html
         except asyncio.TimeoutError:
             if task:
                 task.html_report = _render_fallback_html(query, merged, news_digest, merged_source_facts)
+            report_render_fallback = True
+            report_render_reason = "报告生成器超时，已切换为结构化降级排版。"
         except Exception as e:
             if task:
                 task.html_report = _render_fallback_html(query, f"{merged}\n\n[报告生成器异常：{str(e)}]", news_digest)
+            report_render_fallback = True
+            report_render_reason = f"报告生成器异常，已切换为结构化降级排版：{str(e)}"
 
     if task:
-        task.data_quality = "degraded" if fallback_total >= 3 else "mixed" if fallback_total > 0 else "live"
-        task.progress = 100 if fallback_total == 0 else 96 if fallback_total < 3 else 88
-        task.status = "degraded" if fallback_total >= 2 else "completed"
+        if report_render_fallback and report_render_reason:
+            _append_timeline(
+                task,
+                _make_timeline_event(
+                    "render",
+                    "报告已切换降级排版",
+                    report_render_reason,
+                    "warning",
+                ),
+            )
+        final_degraded = fallback_total >= 2 or primary_source_gap or report_render_fallback
+        task.data_quality = "degraded" if final_degraded and (fallback_total >= 2 or report_render_fallback) else "mixed" if (fallback_total > 0 or primary_source_gap) else "live"
+        task.progress = 100 if not final_degraded else 94 if report_render_fallback and fallback_total == 0 else 92 if primary_source_gap and fallback_total < 2 else 88
+        task.status = "degraded" if final_degraded else "completed"
         task.sections = _build_sections(query, results, merged, fallback_map, source_counts, task.status)
         task.agent_status = {
             "query": "fallback" if fallback_map.get("query") else "done",
             "media": "fallback" if fallback_map.get("media") else "done",
             "insight": "fallback" if fallback_map.get("insight") else "done",
-            "report": "done",
+            "report": "fallback" if report_render_fallback else "done",
         }
         task.fallback_used = any(fallback_map.values())
         task.source_count = source_counts.get("final", len(news_digest))
         task.news_digest = news_digest
         task.matched_terms = _extract_query_terms(query)
         task.sentiment_hint = _build_sentiment_hint(" ".join([query, *results.values(), merged]))
-        task.degraded_reason = "当前报告已先基于真实来源摘录、监控摘要与结构化线索完成收口，可继续用于观察与推演，后续补齐真实素材后会更完整。" if task.status == "degraded" else None
-        task.ui_message = "当前报告已生成降级版，但仍保留真实来源摘录，可继续查看重点结论或进入未来推演。" if task.status == "degraded" else "综合研判已完成，可继续进入未来推演。"
+        if task.status == "degraded":
+            reasons: list[str] = []
+            if primary_source_gap:
+                reasons.append("至少一条主链没有拿到真实来源，当前综合结论已退回观察版。")
+            if fallback_total >= 2:
+                reasons.append("多路代理体已回退到观察摘要，当前结果更适合继续观察与推演，不宜视为完整研判。")
+            if report_render_fallback and report_render_reason:
+                reasons.append(report_render_reason)
+            task.degraded_reason = " ".join(reasons) or "当前报告已先基于真实来源摘录、监控摘要与结构化线索完成收口，可继续用于观察与推演，后续补齐真实素材后会更完整。"
+            task.ui_message = "当前结果已切换为降级研判版本，仍可继续查看重点结论或进入未来推演。"
+        else:
+            task.degraded_reason = None
+            task.ui_message = "综合研判已完成，可继续进入未来推演。"
         task.agent_metrics = {
             "query": AnalysisAgentState(key="query", label=_AGENT_LABELS["query"], status="fallback" if fallback_map.get("query") else "done", progress=100, source_count=source_counts.get("query", 0), summary=_strip_md(results.get("query", ""))[:120], fallback_used=bool(fallback_map.get("query")), updated_at=datetime.now(UTC)),
             "media": AnalysisAgentState(key="media", label=_AGENT_LABELS["media"], status="fallback" if fallback_map.get("media") else "done", progress=100, source_count=source_counts.get("media", 0), summary=_strip_md(results.get("media", ""))[:120], fallback_used=bool(fallback_map.get("media")), updated_at=datetime.now(UTC)),
             "insight": AnalysisAgentState(key="insight", label=_AGENT_LABELS["insight"], status="fallback" if fallback_map.get("insight") else "done", progress=100, source_count=source_counts.get("insight", 0), summary=_strip_md(results.get("insight", ""))[:120], fallback_used=bool(fallback_map.get("insight")), updated_at=datetime.now(UTC)),
-            "report": AnalysisAgentState(key="report", label=_AGENT_LABELS["report"], status="done", progress=100, source_count=source_counts.get("final", 0), summary=_strip_md(merged)[:120], fallback_used=task.status == "degraded", updated_at=datetime.now(UTC)),
+            "report": AnalysisAgentState(key="report", label=_AGENT_LABELS["report"], status="fallback" if report_render_fallback else "done", progress=100 if not report_render_fallback else 82, source_count=source_counts.get("final", 0), summary=_strip_md(merged)[:120], fallback_used=task.status == "degraded" or report_render_fallback, updated_at=datetime.now(UTC)),
         }
         _append_timeline(
             task,
@@ -1151,6 +1222,7 @@ async def _run_agent_team(task_id: str, query: str) -> dict[str, str]:
             )
         task.last_update_at = datetime.now(UTC)
         task.completed_at = datetime.now(UTC)
+        _persist_analysis_task(task)
     return results
 
 
@@ -1243,6 +1315,7 @@ async def trigger_analysis(req: AnalysisRequest) -> dict:
         task.ui_message = f"已先接入 {len(warm_digest)} 条监控摘要，多代理研判结果会继续陆续到达。"
 
     _task_registry[task_id] = task
+    _persist_analysis_task(task)
 
     asyncio.create_task(_run_agent_team(task_id, req.query))
 
@@ -1273,7 +1346,7 @@ async def trigger_analysis(req: AnalysisRequest) -> dict:
 @router.get("/{task_id}")
 async def get_analysis_task(task_id: str) -> dict:
     """Get analysis task status and results"""
-    task = _task_registry.get(task_id)
+    task = _get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return {
