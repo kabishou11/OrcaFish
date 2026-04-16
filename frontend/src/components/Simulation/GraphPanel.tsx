@@ -723,12 +723,12 @@ export default function GraphPanel({
     const g = svg.append('g').attr('transform', zoomTransformRef.current.toString())
 
     const laneSpecs = [
-      { x: 0.02, width: 0.18, color: 'rgba(37,99,235,0.04)' },
-      { x: 0.20, width: 0.16, color: 'rgba(14,165,233,0.04)' },
-      { x: 0.36, width: 0.20, color: 'rgba(249,115,22,0.04)' },
-      { x: 0.56, width: 0.14, color: 'rgba(22,163,74,0.04)' },
-      { x: 0.70, width: 0.18, color: 'rgba(124,58,237,0.04)' },
-      { x: 0.88, width: 0.10, color: 'rgba(15,118,110,0.04)' },
+      { x: 0.02, width: 0.18, color: 'rgba(37,99,235,0.05)', label: '议题 / 目标', accent: '#2563eb' },
+      { x: 0.20, width: 0.16, color: 'rgba(14,165,233,0.05)', label: '证据片段', accent: '#0ea5e9' },
+      { x: 0.36, width: 0.20, color: 'rgba(249,115,22,0.05)', label: '实体 / 概念', accent: '#f97316' },
+      { x: 0.56, width: 0.14, color: 'rgba(22,163,74,0.05)', label: '传播平台', accent: '#16a34a' },
+      { x: 0.70, width: 0.18, color: 'rgba(124,58,237,0.05)', label: '观察角色', accent: '#7c3aed' },
+      { x: 0.88, width: 0.10, color: 'rgba(15,118,110,0.05)', label: '动作层', accent: '#0f766e' },
     ]
 
     const laneLayer = g.append('g')
@@ -742,6 +742,24 @@ export default function GraphPanel({
         .attr('fill', lane.color)
         .attr('stroke', 'rgba(148,163,184,0.08)')
         .attr('stroke-width', 1)
+      laneLayer.append('rect')
+        .attr('x', width * lane.x + 12)
+        .attr('y', 78)
+        .attr('width', Math.max(80, width * lane.width - 24))
+        .attr('height', 26)
+        .attr('rx', 13)
+        .attr('fill', 'rgba(255,255,255,0.88)')
+        .attr('stroke', lane.accent)
+        .attr('stroke-opacity', 0.12)
+        .attr('stroke-width', 1)
+      laneLayer.append('text')
+        .attr('x', width * lane.x + 24)
+        .attr('y', 95)
+        .attr('fill', lane.accent)
+        .attr('font-size', 11)
+        .attr('font-weight', 700)
+        .style('font-family', "'IBM Plex Sans', system-ui, sans-serif")
+        .text(lane.label)
     })
 
     const zoomBehavior = d3.zoom<SVGSVGElement, unknown>()
@@ -773,7 +791,7 @@ export default function GraphPanel({
       .join('path')
       .attr('stroke', (d) => getEdgeColor(d))
       .attr('stroke-width', (d) => Math.max(2.8, (((d.rawData?.weight as number) ?? 1)) * 3.2))
-      .attr('stroke-opacity', 0.98)
+      .attr('stroke-opacity', 0.76)
       .attr('fill', 'none')
       .style('cursor', 'pointer')
       .attr('marker-end', 'url(#graph-arrow)')

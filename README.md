@@ -626,14 +626,13 @@ pnpm dev
 
 ## 17. 参考项目
 
-本项目在设计、交互、知识图谱工作台和能力接入上，直接或间接参考了以下本地项目：
+本项目在设计、交互、知识图谱工作台和能力接入上，直接或间接参考了以下真实项目：
 
-- 直接主参考：[F:\1work\OrcFish\MiroFish](F:/1work/OrcFish/MiroFish)
-- 直接界面/能力参考：[F:\1work\OrcFish\BettaFish](F:/1work/OrcFish/BettaFish)
-- 全球观测链路参考：[F:\1work\OrcFish\worldmonitor](F:/1work/OrcFish/worldmonitor)
-- 间接参考：[F:\1work\OrcFish\last30days-skill](F:/1work/OrcFish/last30days-skill)
-- 本地 Zep 改造版参考：[F:\3work\1风险预测\MiroFish](F:/3work/1风险预测/MiroFish)
-- 直接融合能力：[F:\1work\OrcFish\orcafish\crawl4ai](F:/1work/OrcFish/orcafish/crawl4ai)
-- 直接融合能力：[F:\1work\OrcFish\orcafish\zep](F:/1work/OrcFish/orcafish/zep)
-- 本地 Zep 部署目录：[F:\3work\1风险预测\zep-local](F:/3work/1风险预测/zep-local)
+- 直接主参考：[666ghj/MiroFish](https://github.com/666ghj/MiroFish)
+- 直接界面 / 能力参考：[666ghj/BettaFish](https://github.com/666ghj/BettaFish)
+- 全球观测链路参考：[koala73/worldmonitor](https://github.com/koala73/worldmonitor)
+- 间接参考：[mvanhorn/last30days-skill](https://github.com/mvanhorn/last30days-skill)
+- 本地 Zep 改造版所基于的上游仓库：[666ghj/MiroFish](https://github.com/666ghj/MiroFish)
+- 直接融合能力：[unclecode/crawl4ai](https://github.com/unclecode/crawl4ai)
+- 直接融合能力：[getzep/zep](https://github.com/getzep/zep)
 
