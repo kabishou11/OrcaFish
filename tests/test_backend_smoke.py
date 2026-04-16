@@ -93,6 +93,10 @@ async def _run_smoke() -> None:
 
         analysis = await trigger_analysis(AnalysisRequest(query="台海局势升级后的舆论演化"))
         assert analysis["status"] == "running"
+        assert isinstance(analysis.get("news_digest"), list)
+        assert analysis["source_count"] >= 0
+        assert analysis["progress"] >= 3
+        assert analysis.get("ui_message")
 
         analysis_status = await get_analysis_task(analysis["task_id"])
         assert analysis_status["status"] == "running"
