@@ -2347,6 +2347,7 @@ async def get_simulation_report(run_id: str) -> dict:
     graph_fact_source_mode = graph_calibration["source_mode"]
     country_context = run.get("country_context") if isinstance(run.get("country_context"), dict) else {}
     inherited_graph_context = run.get("graph_context") if isinstance(run.get("graph_context"), dict) else {}
+    hero_digest = escape(str((inherited_graph_context.get("selected_digest") or {}).get("title") or "")) if inherited_graph_context else ""
 
     # ── HTML helpers ──────────────────────────────────────────────────────────
     safe_run_id = escape(str(run_id))
@@ -2599,6 +2600,7 @@ async def get_simulation_report(run_id: str) -> dict:
         analysis_quality = escape(str(inherited_graph_context.get("analysis_quality") or "等待质量标记"))
         analysis_summary = escape(str(inherited_graph_context.get("analysis_summary") or "当前还没有继承到议题研判摘要。"))
         graph_id = escape(str(inherited_graph_context.get("graph_id") or "未命名图谱"))
+        hero_digest = escape(str(selected_digest.get("title") or ""))
         query_html = _html_list([escape(str(item)) for item in queries[:5]], "没有继承到检索词")
         fact_html = _html_list([escape(str(item)) for item in facts[:4]], "没有继承到事实摘录")
         digest_items = []
@@ -2722,6 +2724,7 @@ async def get_simulation_report(run_id: str) -> dict:
       生成时间: {safe_generated_at}
     </div>
     <h1>未来预测报告：{safe_seed}</h1>
+    {f'<div class="meta">当前派生来源：{hero_digest}</div>' if hero_digest else ''}
     <div class="summary">
       这份报告围绕 <strong>{safe_seed}</strong> 汇总双平台行动轨迹、热点议题簇、关键互动关系与轮次演化，
       并补入外部公开情报校准，用于快速判断谁在放大议题、哪些主题正在升温，以及未来 24-72 小时的主要观察点。

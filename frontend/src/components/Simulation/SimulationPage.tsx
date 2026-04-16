@@ -549,6 +549,11 @@ function ReportViewer({
                 </span>
               ))}
             </div>
+            {graphContext.selected_digest?.title ? (
+              <div style={{ width: '100%', fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+                <strong style={{ color: 'var(--text-primary)' }}>当前派生来源：</strong>{graphContext.selected_digest.title}
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -1739,6 +1744,15 @@ export default function SimulationPage() {
                   <div>路径: 直接沿着这组上下文进入未来预测</div>
                 </div>
               )}
+              {draftGraphContext?.selected_digest?.title ? (
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.65 }}>
+                  <div style={{ fontFamily: 'var(--font-mono)', marginBottom: 4 }}>当前派生来源</div>
+                  <div style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{draftGraphContext.selected_digest.title}</div>
+                  {draftGraphContext.selected_digest.summary ? (
+                    <div style={{ marginTop: 4 }}>{draftGraphContext.selected_digest.summary}</div>
+                  ) : null}
+                </div>
+              ) : null}
               <button className="btn btn-secondary btn-sm" onClick={clearDraft} style={{ justifyContent: 'center' }}>
                 清空草稿
               </button>
