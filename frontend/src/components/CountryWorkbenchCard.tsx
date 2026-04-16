@@ -76,6 +76,9 @@ export default function CountryWorkbenchCard({
       background: highlight ? 'linear-gradient(135deg, rgba(37,99,235,0.08), rgba(255,255,255,0.95))' : 'rgba(255,255,255,0.88)',
       boxShadow: highlight ? '0 10px 24px rgba(37,99,235,0.08)' : 'none',
     }}>
+      <div style={{ fontSize: '0.62rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.08em', marginBottom: 8 }}>
+        国家工作台
+      </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 'var(--sp-3)', alignItems: 'flex-start' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -92,12 +95,24 @@ export default function CountryWorkbenchCard({
             ) : null}
           </div>
           <div style={{ marginTop: 4, fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-            {displayActivity} · {newsCount} 条新闻 · {signalCount} 条信号 · {focalCount} 个焦点
+            最近活动 {displayActivity}
           </div>
         </div>
         <span className={`badge ${riskBadgeClass(displayScore, displayLevel)}`}>
           <span className="badge-dot" />CII {displayScore.toFixed(1)}
         </span>
+      </div>
+      <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+        {[
+          ['新闻', newsCount],
+          ['信号', signalCount],
+          ['焦点', focalCount],
+        ].map(([label, value]) => (
+          <div key={label as string} style={{ padding: '8px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(248,250,252,0.92)', border: '1px solid var(--border)' }}>
+            <div style={{ fontSize: '0.56rem', color: 'var(--text-muted)' }}>{label as string}</div>
+            <div style={{ marginTop: 4, fontFamily: 'var(--font-mono)', fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>{value as number}</div>
+          </div>
+        ))}
       </div>
       <div style={{ marginTop: 8, fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.55 }}>
         {displayHeadline}
@@ -130,12 +145,12 @@ export default function CountryWorkbenchCard({
       {(onAnalysis || onSimulation) ? (
         <div style={{ marginTop: 10, display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
           {onAnalysis ? (
-            <button className="btn btn-primary btn-sm" onClick={onAnalysis}>
+            <button className="btn btn-primary btn-sm" onClick={onAnalysis} style={{ flex: 1, justifyContent: 'center' }}>
               {analysisLabel}
             </button>
           ) : null}
           {onSimulation ? (
-            <button className="btn btn-secondary btn-sm" onClick={onSimulation}>
+            <button className="btn btn-secondary btn-sm" onClick={onSimulation} style={{ flex: 1, justifyContent: 'center' }}>
               {simulationLabel}
             </button>
           ) : null}
