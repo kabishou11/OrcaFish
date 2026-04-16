@@ -17,7 +17,18 @@ interface SimulationRun {
 
 // ── KG types for local state ─────────────────────────────────────────────────
 interface KGNode { id: string; name: string; type: string; labels?: string[]; properties?: Record<string, unknown> }
-interface KGLink { source: string; target: string; type: string; name: string; weight?: number }
+interface KGLink {
+  source: string
+  target: string
+  type: string
+  name: string
+  weight?: number
+  locator_id?: string
+  origin?: string
+  source_kind?: string
+  confidence?: number
+  evidence_node_ids?: string[]
+}
 
 interface SimRunStatus {
   twitter_current_round: number; reddit_current_round: number; total_rounds: number
@@ -31,6 +42,17 @@ interface GraphPayload {
   graph_source_mode?: string
   graph_entity_types?: string[]
   graph_synced_at?: string | null
+  graph_refresh_status?: string
+  graph_refresh_error?: string | null
+  graph_is_stale?: boolean
+  source_breakdown?: {
+    remote_nodes?: number
+    remote_edges?: number
+    snapshot_nodes?: number
+    snapshot_edges?: number
+    runtime_nodes?: number
+    runtime_edges?: number
+  }
 }
 
 interface DraftGraphContextSummary {
@@ -67,18 +89,50 @@ interface DraftGraphContextSummary {
 
 type DraftDigestItem = NonNullable<DraftGraphContextSummary['news_digest']>[number]
 
-function normalizeGraphPayload(data?: { nodes?: KGNode[]; edges?: KGLink[]; graph_source_mode?: string; graph_entity_types?: string[]; graph_synced_at?: string | null } | null): GraphPayload {
+function normalizeGraphPayload(data?: {
+  nodes?: KGNode[]
+  edges?: KGLink[]
+  graph_source_mode?: string
+  graph_entity_types?: string[]
+  graph_synced_at?: string | null
+  graph_refresh_status?: string
+  graph_refresh_error?: string | null
+  graph_is_stale?: boolean
+  source_breakdown?: GraphPayload['source_breakdown']
+} | null): GraphPayload {
   return {
     nodes: Array.isArray(data?.nodes) ? data.nodes : [],
     edges: Array.isArray(data?.edges) ? data.edges : [],
     graph_source_mode: typeof data?.graph_source_mode === 'string' ? data.graph_source_mode : undefined,
     graph_entity_types: Array.isArray(data?.graph_entity_types) ? data.graph_entity_types : undefined,
     graph_synced_at: typeof data?.graph_synced_at === 'string' ? data.graph_synced_at : null,
+    graph_refresh_status: typeof data?.graph_refresh_status === 'string' ? data.graph_refresh_status : undefined,
+    graph_refresh_error: typeof data?.graph_refresh_error === 'string' ? data.graph_refresh_error : null,
+    graph_is_stale: Boolean(data?.graph_is_stale),
+    source_breakdown: data?.source_breakdown ? { ...data.source_breakdown } : undefined,
   }
 }
 
 function getGraphPayloadSignature(data: GraphPayload): string {
   return JSON.stringify(data)
+}
+
+function getGraphSourceModeLabel(sourceMode?: string | null) {
+  const normalized = String(sourceMode || '').trim().toLowerCase()
+  if (!normalized) return '等待图谱同步'
+  if (normalized.includes('remote_nodes_edges')) return '真实图谱关系'
+  if (normalized.includes('episodes')) return '观察片段映射'
+  if (normalized.includes('snapshot')) return '本地图谱快照'
+  return sourceMode || '等待图谱同步'
+}
+
+function getGraphRefreshStatusLabel(status?: string | null, isStale?: boolean) {
+  const normalized = String(status || '').trim().toLowerCase()
+  if (normalized === 'fresh') return isStale ? '已同步但待刷新' : '图谱已同步'
+  if (normalized === 'stale') return '图谱待刷新'
+  if (normalized === 'refreshing') return '图谱刷新中'
+  if (normalized === 'failed') return '图谱刷新失败'
+  return isStale ? '图谱待刷新' : '等待图谱同步'
 }
 
 function getPredictionNextStep(run: SimulationRun | null, graphSummary: {
@@ -2450,9 +2504,27 @@ export default function SimulationPage() {
                   状态 {getRunStatusLabel(selectedRun.status)}
                 </span>
                 <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(124,58,237,0.06)', border: '1px solid rgba(124,58,237,0.12)', fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
-                  图谱 {graphData?.graph_source_mode || '等待校准'}
+                  图谱 {getGraphSourceModeLabel(graphData?.graph_source_mode)}
+                </span>
+                <span style={{ padding: '4px 8px', borderRadius: 999, background: graphData?.graph_is_stale ? 'rgba(245,158,11,0.08)' : 'rgba(15,23,42,0.04)', border: graphData?.graph_is_stale ? '1px solid rgba(245,158,11,0.16)' : '1px solid rgba(15,23,42,0.08)', fontSize: '0.66rem', color: graphData?.graph_is_stale ? '#b45309' : 'var(--text-secondary)' }}>
+                  刷新 {getGraphRefreshStatusLabel(graphData?.graph_refresh_status, graphData?.graph_is_stale)}
                 </span>
               </div>
+              {graphData?.source_breakdown ? (
+                <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+                  {[
+                    { label: '真实节点', value: graphData.source_breakdown.remote_nodes ?? 0, tone: '#2563eb' },
+                    { label: '真实关系', value: graphData.source_breakdown.remote_edges ?? 0, tone: '#0284c7' },
+                    { label: '快照补层', value: (graphData.source_breakdown.snapshot_nodes ?? 0) + (graphData.source_breakdown.snapshot_edges ?? 0), tone: '#7c3aed' },
+                    { label: '运行时补层', value: (graphData.source_breakdown.runtime_nodes ?? 0) + (graphData.source_breakdown.runtime_edges ?? 0), tone: '#16a34a' },
+                  ].map((item) => (
+                    <div key={item.label} style={{ padding: '9px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'rgba(255,255,255,0.92)' }}>
+                      <div style={{ fontSize: '0.64rem', color: 'var(--text-muted)', marginBottom: 4 }}>{item.label}</div>
+                      <div style={{ fontSize: '0.78rem', fontWeight: 700, color: item.tone }}>{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               {graphCalibrationSummary?.selectedDigest ? (
                 <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(124,58,237,0.12)', background: 'rgba(255,255,255,0.94)' }}>
                   <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: 6 }}>
@@ -2477,6 +2549,11 @@ export default function SimulationPage() {
               {graphData?.graph_synced_at ? (
                 <div style={{ marginTop: 6, fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
                   最近图谱同步：{new Date(graphData.graph_synced_at).toLocaleString('zh-CN', { hour12: false })}
+                </div>
+              ) : null}
+              {graphData?.graph_refresh_error ? (
+                <div style={{ marginTop: 6, fontSize: '0.68rem', color: '#b45309', lineHeight: 1.6 }}>
+                  刷新提示：{graphData.graph_refresh_error}
                 </div>
               ) : null}
             </div>

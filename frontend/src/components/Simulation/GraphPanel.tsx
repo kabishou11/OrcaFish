@@ -8,6 +8,7 @@ interface GraphNode {
   name: string
   type: string
   labels?: string[]
+  locator_id?: string
   rawData?: Record<string, unknown>
   // D3 simulation fields
   x?: number; y?: number; fx?: number | null; fy?: number | null
@@ -17,6 +18,7 @@ interface GraphEdge {
   source: string | GraphNode
   target: string | GraphNode
   uuid?: string
+  locator_id?: string
   type?: string
   name?: string
   label?: string
@@ -25,7 +27,11 @@ interface GraphEdge {
   source_node_uuid?: string
   target_node_uuid?: string
   fact?: string
+  origin?: string
+  source_kind?: string
+  confidence?: number
   episodes?: string[]
+  evidence_node_ids?: string[]
   created_at?: string
   weight?: number
   // D3 computed
@@ -65,6 +71,17 @@ interface GraphPanelProps {
     graph_source_mode?: string
     graph_entity_types?: string[]
     graph_synced_at?: string | null
+    graph_refresh_status?: string
+    graph_refresh_error?: string | null
+    graph_is_stale?: boolean
+    source_breakdown?: {
+      remote_nodes?: number
+      remote_edges?: number
+      snapshot_nodes?: number
+      snapshot_edges?: number
+      runtime_nodes?: number
+      runtime_edges?: number
+    }
   }
   loading?: boolean
   onRefresh?: () => void
@@ -253,6 +270,15 @@ function getGraphSourceModeLabel(sourceMode?: string | null): string {
   if (normalized.includes('snapshot')) return '本地图谱快照'
   if (normalized.includes('search')) return '图谱检索校准'
   return sourceMode || '等待图谱同步'
+}
+
+function getGraphRefreshStatusLabel(status?: string | null, isStale?: boolean): string {
+  const normalized = String(status || '').trim().toLowerCase()
+  if (normalized === 'fresh') return isStale ? '已同步但需要刷新' : '图谱已同步'
+  if (normalized === 'stale') return '图谱待刷新'
+  if (normalized === 'refreshing') return '图谱刷新中'
+  if (normalized === 'failed') return '图谱刷新失败'
+  return isStale ? '图谱待刷新' : '等待图谱同步'
 }
 
 function getNodeRadius(type: string): number {
@@ -1138,6 +1164,8 @@ export default function GraphPanel({
     return (edgeId: string) => {
       if (!graphData?.edges?.length || !graphData?.nodes?.length) return
       const edge = graphData.edges.find((item) => {
+        const locatorId = String(item.rawData?.locator_id ?? item.locator_id ?? item.uuid ?? '').trim()
+        if (locatorId && locatorId === edgeId) return true
         const source = String(
           item.rawData?.source_node_uuid
           ?? item.source_node_uuid
@@ -1268,6 +1296,12 @@ export default function GraphPanel({
   }, [selectedItem])
   const selectedEdgeEvidenceNodes = useMemo(() => {
     if (selectedItem?.type !== 'edge' || !graphData?.nodes?.length) return []
+    const evidenceIds = (((selectedItem.data?.evidence_node_ids as string[] | undefined) ?? []) as string[])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+    if (evidenceIds.length > 0) {
+      return graphData.nodes.filter((node) => evidenceIds.includes(String(node.id || ''))).slice(0, 6)
+    }
     const refs = (((selectedItem.data?.episodes as string[] | undefined) ?? []) as string[])
       .map((item) => String(item || '').trim())
       .filter(Boolean)
@@ -1291,6 +1325,20 @@ export default function GraphPanel({
     () => getGraphSourceModeLabel(graphData?.graph_source_mode),
     [graphData?.graph_source_mode],
   )
+  const refreshStatusLabel = useMemo(
+    () => getGraphRefreshStatusLabel(graphData?.graph_refresh_status, graphData?.graph_is_stale),
+    [graphData?.graph_is_stale, graphData?.graph_refresh_status],
+  )
+  const sourceBreakdownItems = useMemo(() => {
+    const breakdown = graphData?.source_breakdown
+    if (!breakdown) return []
+    return [
+      { label: '真实节点', value: Number(breakdown.remote_nodes || 0), tone: '#2563eb' },
+      { label: '真实关系', value: Number(breakdown.remote_edges || 0), tone: '#0284c7' },
+      { label: '快照补层', value: Number(breakdown.snapshot_nodes || 0) + Number(breakdown.snapshot_edges || 0), tone: '#7c3aed' },
+      { label: '运行时补层', value: Number(breakdown.runtime_nodes || 0) + Number(breakdown.runtime_edges || 0), tone: '#16a34a' },
+    ]
+  }, [graphData?.source_breakdown])
   const graphPhaseBadge = useMemo(() => {
     if (loading) {
       return {
@@ -1396,6 +1444,20 @@ export default function GraphPanel({
                 图谱来源 · {sourceModeLabel}
               </span>
             ) : null}
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 10px',
+              borderRadius: 999,
+              background: graphData?.graph_is_stale ? 'rgba(245,158,11,0.10)' : 'rgba(255,255,255,0.88)',
+              border: graphData?.graph_is_stale ? '1px solid rgba(245,158,11,0.24)' : '1px solid rgba(219,231,243,0.92)',
+              fontSize: 11,
+              color: graphData?.graph_is_stale ? '#b45309' : '#475569',
+              fontWeight: 600,
+            }}>
+              刷新状态 · {refreshStatusLabel}
+            </span>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10, pointerEvents: 'auto' }}>
@@ -1472,6 +1534,42 @@ export default function GraphPanel({
               ))}
             </div>
           </div>
+          {sourceBreakdownItems.length ? (
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              flexWrap: 'wrap',
+              background: 'rgba(255,255,255,0.92)',
+              border: '1px solid rgba(219,231,243,0.92)',
+              boxShadow: '0 8px 24px rgba(15,23,42,0.05)',
+              borderRadius: 16,
+              padding: '10px 12px',
+              pointerEvents: 'auto',
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#334155', marginRight: 4 }}>来源拆解</div>
+              {sourceBreakdownItems.map((item) => (
+                <div
+                  key={item.label}
+                  style={{
+                    minWidth: 92,
+                    borderRadius: 12,
+                    border: '1px solid rgba(219,231,243,0.92)',
+                    background: 'rgba(248,250,252,0.96)',
+                    padding: '7px 10px',
+                  }}
+                >
+                  <div style={{ fontSize: 10, color: '#64748b', marginBottom: 3 }}>{item.label}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: item.tone }}>{item.value}</div>
+                </div>
+              ))}
+              {graphData?.graph_refresh_error ? (
+                <div style={{ fontSize: 10, color: '#b45309', lineHeight: 1.6, maxWidth: 320 }}>
+                  刷新提示：{graphData.graph_refresh_error}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div style={{
             display: 'inline-flex',
             alignItems: 'center',

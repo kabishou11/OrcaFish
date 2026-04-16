@@ -670,6 +670,7 @@ def _append_node(nodes: List[GraphNode], seen_nodes: Set[str], node_id: str, nam
         GraphNode(
             id=node_id,
             uuid=str(properties.get("uuid") or node_id),
+            locator_id=str(properties.get("locator_id") or properties.get("uuid") or node_id),
             name=name,
             type=node_type,
             labels=normalized_labels,
@@ -711,6 +712,7 @@ def _append_edge(
             source=source,
             target=target,
             uuid=str(properties.get("uuid") or f"{edge_type}::{source}::{target}"),
+            locator_id=str(properties.get("locator_id") or properties.get("uuid") or f"{source}|{target}|{edge_type}|{str(properties.get('fact') or fact or label)}"),
             type=edge_type,
             fact_type=str(properties.get("fact_type") or edge_type),
             weight=weight,
@@ -727,6 +729,10 @@ def _append_edge(
             invalid_at=str(properties.get("invalid_at")) if properties.get("invalid_at") else None,
             expired_at=str(properties.get("expired_at")) if properties.get("expired_at") else None,
             episodes=edge_episodes,
+            evidence_node_ids=list(properties.get("evidence_node_ids") or []),
+            source_kind=str(properties.get("source_kind") or properties.get("origin") or ""),
+            origin=str(properties.get("origin") or ""),
+            confidence=float(properties.get("confidence") or weight),
         )
     )
 
@@ -787,6 +793,17 @@ def _default_graph_metadata() -> Dict[str, Any]:
         "graph_relation_count": 0,
         "graph_entity_types": [],
         "graph_synced_at": None,
+        "graph_refresh_status": "idle",
+        "graph_refresh_error": "",
+        "graph_is_stale": True,
+        "source_breakdown": {
+            "remote_nodes": 0,
+            "remote_edges": 0,
+            "snapshot_nodes": 0,
+            "snapshot_edges": 0,
+            "runtime_nodes": 0,
+            "runtime_edges": 0,
+        },
         "node_count": 0,
         "edge_count": 0,
     }
@@ -829,6 +846,9 @@ def _convert_remote_graph_data(graph_data: Dict[str, Any]) -> Tuple[List[GraphNo
             attributes=raw_node.get("attributes") if isinstance(raw_node.get("attributes"), dict) else {},
             created_at=raw_node.get("created_at"),
             source="graphiti",
+            origin="remote",
+            source_kind="remote_node",
+            locator_id=str(raw_node.get("locator_id") or raw_node.get("uuid") or node_id),
         )
 
     for raw_edge in graph_data.get("edges") or []:
@@ -862,6 +882,10 @@ def _convert_remote_graph_data(graph_data: Dict[str, Any]) -> Tuple[List[GraphNo
             invalid_at=raw_edge.get("invalid_at"),
             expired_at=raw_edge.get("expired_at"),
             episodes=raw_edge.get("episodes") if isinstance(raw_edge.get("episodes"), list) else [],
+            evidence_node_ids=raw_edge.get("evidence_node_ids") if isinstance(raw_edge.get("evidence_node_ids"), list) else [],
+            origin=str(raw_edge.get("origin") or "remote"),
+            source_kind=str(raw_edge.get("source_kind") or "remote_edge"),
+            locator_id=str(raw_edge.get("locator_id") or raw_edge.get("uuid") or f"{source}|{target}|{edge_type}|{fact}"),
         )
     return nodes, edges
 
@@ -886,6 +910,10 @@ def _provision_run_graph(req: SimulationCreateRequest) -> Dict[str, Any]:
             "graph_relation_count": graph_info.edge_count,
             "graph_entity_types": graph_info.entity_types,
             "graph_synced_at": datetime.now(UTC).isoformat(),
+            "graph_refresh_status": "fresh",
+            "graph_refresh_error": "",
+            "graph_is_stale": False,
+            "source_breakdown": _default_graph_metadata()["source_breakdown"],
             "node_count": graph_info.node_count,
             "edge_count": graph_info.edge_count,
         }
@@ -908,6 +936,10 @@ def _refresh_run_graph_metadata(run: dict) -> Dict[str, Any]:
         "graph_relation_count": int(run.get("graph_relation_count") or 0),
         "graph_entity_types": list(current_types) if isinstance(current_types, list) else [],
         "graph_synced_at": run.get("graph_synced_at"),
+        "graph_refresh_status": str(run.get("graph_refresh_status") or "stale"),
+        "graph_refresh_error": str(run.get("graph_refresh_error") or ""),
+        "graph_is_stale": bool(run.get("graph_is_stale", True)),
+        "source_breakdown": dict(run.get("source_breakdown") or _default_graph_metadata()["source_breakdown"]),
         "node_count": int(run.get("node_count") or run.get("graph_entity_count") or 0),
         "edge_count": int(run.get("edge_count") or run.get("graph_relation_count") or 0),
     }
@@ -922,10 +954,17 @@ def _refresh_run_graph_metadata(run: dict) -> Dict[str, Any]:
             metadata["graph_relation_count"] = graph_info.edge_count
             metadata["graph_entity_types"] = graph_info.entity_types
             metadata["graph_synced_at"] = datetime.now(UTC).isoformat()
+            metadata["graph_refresh_status"] = "fresh"
+            metadata["graph_refresh_error"] = ""
+            metadata["graph_is_stale"] = False
             metadata["node_count"] = graph_info.node_count
             metadata["edge_count"] = graph_info.edge_count
             metadata["graph_source_mode"] = str(graph_data.get("source_mode") or "")
+            metadata["source_breakdown"] = dict(graph_data.get("source_breakdown") or metadata["source_breakdown"])
     except Exception:
+        metadata["graph_refresh_status"] = "stale"
+        metadata["graph_refresh_error"] = "图谱刷新失败，当前沿用上次成功同步的结果。"
+        metadata["graph_is_stale"] = True
         return metadata
 
     return metadata
@@ -1833,7 +1872,6 @@ async def get_run_graph(run_id: str) -> dict:
     scenario_name = _normalize_text(run.get("scenario", "")) or "未来议题"
     topic_node_id = f"topic::{run_id}"
     requirement_node_id = f"goal::{run_id}"
-
     _append_node(
         nodes,
         seen_nodes,
@@ -1843,6 +1881,8 @@ async def get_run_graph(run_id: str) -> dict:
         summary=seed_content[:260],
         status=run.get("status", "created"),
         source="simulation",
+        origin="runtime",
+        source_kind="simulation_topic",
     )
     if requirement:
         _append_node(
@@ -1853,23 +1893,25 @@ async def get_run_graph(run_id: str) -> dict:
             "Goal",
             requirement=requirement,
             source="simulation",
+            origin="runtime",
+            source_kind="simulation_goal",
         )
         _append_edge(edges, seen_edges, topic_node_id, requirement_node_id, "focuses_on", "预测目标", 0.95, requirement)
 
     for platform_id, platform_name in (("platform::twitter", "信息广场"), ("platform::reddit", "话题社区")):
-        _append_node(nodes, seen_nodes, platform_id, platform_name, "Platform")
-        _append_edge(edges, seen_edges, topic_node_id, platform_id, "spreads_on", "演化发生在此", 0.78)
+        _append_node(nodes, seen_nodes, platform_id, platform_name, "Platform", origin="runtime", source_kind="platform")
+        _append_edge(edges, seen_edges, topic_node_id, platform_id, "spreads_on", "演化发生在此", 0.78, origin="runtime", source_kind="topic_platform")
 
     seed_entities = _extract_seed_entities(" ".join(part for part in [scenario_name, seed_content, requirement] if part))
     for entity in seed_entities:
         node_id = f"entity::{entity['name']}"
         _append_node(nodes, seen_nodes, node_id, entity["name"], entity["type"])
         label = "关键参与方" if entity["type"] == "Actor" else "关键区域" if entity["type"] == "Region" else "核心议题"
-        _append_edge(edges, seen_edges, topic_node_id, node_id, "relates_to", label, 0.86, f"{scenario_name} 与 {entity['name']} 直接相关")
+        _append_edge(edges, seen_edges, topic_node_id, node_id, "relates_to", label, 0.86, f"{scenario_name} 与 {entity['name']} 直接相关", origin="runtime", source_kind="seed_entity")
         if entity["type"] in {"Actor", "Concept"}:
-            _append_edge(edges, seen_edges, node_id, "platform::twitter", "appears_on", "在信息广场发酵", 0.58)
+            _append_edge(edges, seen_edges, node_id, "platform::twitter", "appears_on", "在信息广场发酵", 0.58, origin="runtime", source_kind="seed_platform")
         if entity["type"] in {"Actor", "Region", "Concept"}:
-            _append_edge(edges, seen_edges, node_id, "platform::reddit", "appears_on", "在话题社区扩散", 0.52)
+            _append_edge(edges, seen_edges, node_id, "platform::reddit", "appears_on", "在话题社区扩散", 0.52, origin="runtime", source_kind="seed_platform")
 
     final_states = run.get("final_states", [])
     agent_activity: Dict[str, Dict[str, Any]] = {}
@@ -2117,7 +2159,7 @@ async def get_run_graph(run_id: str) -> dict:
                 _append_edge(edges, seen_edges, platform_node, topic_cluster_id, "amplifies", _RELATION_LABELS["amplifies"], 0.62, f"{'信息广场' if platform == 'twitter' else '话题社区'} 正在放大“{topic_name}”")
                 linked = True
             if not linked:
-                _append_edge(edges, seen_edges, action_id, topic_node_id, "contributes_to", _RELATION_LABELS["contributes_to"], 0.64, f"{action_title} 正在推动整体未来路径变化：{preview}")
+                _append_edge(edges, seen_edges, action_id, topic_node_id, "contributes_to", _RELATION_LABELS["contributes_to"], 0.64, f"{action_title} 正在推动整体未来路径变化：{preview}", origin="runtime", source_kind="action_projection")
 
     agent_nodes = [node for node in nodes if node.type == "Agent"]
     for index, first in enumerate(agent_nodes):
@@ -2162,10 +2204,19 @@ async def get_run_graph(run_id: str) -> dict:
                 "target_node_name": edge.target_node_name or node_name_map.get(str(edge.target), ""),
                 "source_node_uuid": edge.source_node_uuid or str(edge.source),
                 "target_node_uuid": edge.target_node_uuid or str(edge.target),
+                "locator_id": edge.locator_id or edge.uuid or f"{edge.source}|{edge.target}|{edge.type}|{edge.fact}",
+                "origin": edge.origin or str(edge.attributes.get("origin") or "runtime"),
+                "source_kind": edge.source_kind or str(edge.attributes.get("source_kind") or edge.attributes.get("source") or ""),
+                "confidence": edge.confidence or float(edge.attributes.get("weight") or edge.weight or 0.0),
             }
         )
         for edge in edges
     ]
+    runtime_node_count = len([node for node in nodes if str(node.attributes.get("origin") or node.attributes.get("source") or "runtime") != "remote"])
+    runtime_edge_count = len([edge for edge in enriched_edges if (edge.origin or str(edge.attributes.get("origin") or "")).lower() != "remote"])
+    source_breakdown = dict(graph_metadata.get("source_breakdown") or _default_graph_metadata()["source_breakdown"])
+    source_breakdown["runtime_nodes"] = runtime_node_count
+    source_breakdown["runtime_edges"] = runtime_edge_count
     derived_entity_types = sorted({node.type for node in nodes if node.type})
     response_metadata = {
         **graph_metadata,
@@ -2174,6 +2225,7 @@ async def get_run_graph(run_id: str) -> dict:
         "graph_entity_count": max(int(graph_metadata.get("graph_entity_count") or 0), len(nodes)),
         "graph_relation_count": max(int(graph_metadata.get("graph_relation_count") or 0), len(enriched_edges)),
         "graph_entity_types": graph_metadata.get("graph_entity_types") or derived_entity_types,
+        "source_breakdown": source_breakdown,
     }
     run.update(response_metadata)
     _persist_run_snapshot(run)

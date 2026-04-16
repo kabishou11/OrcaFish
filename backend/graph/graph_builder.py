@@ -137,6 +137,14 @@ class GraphBuilder:
             "edge_count": len(edges),
             "entity_types": sorted(entity_types),
             "source_mode": "snapshot",
+            "source_breakdown": {
+                "remote_nodes": 0,
+                "remote_edges": 0,
+                "snapshot_nodes": len(nodes),
+                "snapshot_edges": len(edges),
+                "runtime_nodes": 0,
+                "runtime_edges": 0,
+            },
         }
 
     def add_text_batch(self, graph_id: str, text_chunks: list[str]) -> list[str]:
@@ -431,6 +439,14 @@ class GraphBuilder:
             "node_count": len(nodes),
             "edge_count": len(edges),
             "entity_types": sorted(entity_types),
+            "source_breakdown": {
+                "remote_nodes": len(nodes),
+                "remote_edges": len(edges),
+                "snapshot_nodes": 0,
+                "snapshot_edges": 0,
+                "runtime_nodes": 0,
+                "runtime_edges": 0,
+            },
         }
 
     def _extract_entities(self, text: str) -> list[str]:
@@ -564,6 +580,14 @@ class GraphBuilder:
             "node_count": len(nodes),
             "edge_count": len(edges),
             "entity_types": sorted(entity_types),
+            "source_breakdown": {
+                "remote_nodes": len(nodes),
+                "remote_edges": len(edges),
+                "snapshot_nodes": 0,
+                "snapshot_edges": 0,
+                "runtime_nodes": 0,
+                "runtime_edges": 0,
+            },
         }
 
     def get_graph_data(self, graph_id: str) -> dict[str, Any]:
@@ -573,6 +597,8 @@ class GraphBuilder:
             remote_graph = self._graph_data_from_nodes_and_edges(graph_id, raw_nodes, raw_edges)
             snapshot = GraphSnapshotStore.load(graph_id)
             if snapshot and snapshot.get("nodes"):
+                snapshot_nodes_added = 0
+                snapshot_edges_added = 0
                 existing_node_ids = {str(node.get("uuid")) for node in remote_graph["nodes"] if isinstance(node, dict)}
                 existing_edge_ids = {
                     (
@@ -587,6 +613,7 @@ class GraphBuilder:
                     node_uuid = str(node.get("uuid") or "")
                     if node_uuid and node_uuid not in existing_node_ids:
                         remote_graph["nodes"].append(node)
+                        snapshot_nodes_added += 1
                 for edge in snapshot.get("edges") or []:
                     edge_key = (
                         str(edge.get("source_node_uuid") or ""),
@@ -595,6 +622,7 @@ class GraphBuilder:
                     )
                     if edge_key not in existing_edge_ids:
                         remote_graph["edges"].append(edge)
+                        snapshot_edges_added += 1
                 remote_graph["node_count"] = len(remote_graph["nodes"])
                 remote_graph["edge_count"] = len(remote_graph["edges"])
                 remote_graph["entity_types"] = sorted(
@@ -607,6 +635,23 @@ class GraphBuilder:
                     }
                 )
                 remote_graph["source_mode"] = "remote_nodes_edges+snapshot"
+                remote_graph["source_breakdown"] = {
+                    "remote_nodes": len(raw_nodes),
+                    "remote_edges": len(raw_edges),
+                    "snapshot_nodes": snapshot_nodes_added,
+                    "snapshot_edges": snapshot_edges_added,
+                    "runtime_nodes": 0,
+                    "runtime_edges": 0,
+                }
+            else:
+                remote_graph["source_breakdown"] = {
+                    "remote_nodes": len(raw_nodes),
+                    "remote_edges": len(raw_edges),
+                    "snapshot_nodes": 0,
+                    "snapshot_edges": 0,
+                    "runtime_nodes": 0,
+                    "runtime_edges": 0,
+                }
             return remote_graph
 
         episodes = self._fetch_episodes(graph_id)
@@ -614,6 +659,8 @@ class GraphBuilder:
             remote_data = self._episode_to_graph_data(graph_id, episodes)
             snapshot = GraphSnapshotStore.load(graph_id)
             if snapshot and snapshot.get("nodes"):
+                snapshot_nodes_added = 0
+                snapshot_edges_added = 0
                 existing_node_ids = {str(node.get("uuid")) for node in remote_data["nodes"] if isinstance(node, dict)}
                 existing_edge_ids = {
                     (
@@ -628,6 +675,7 @@ class GraphBuilder:
                     node_uuid = str(node.get("uuid") or "")
                     if node_uuid and node_uuid not in existing_node_ids:
                         remote_data["nodes"].append(node)
+                        snapshot_nodes_added += 1
                 for edge in snapshot.get("edges") or []:
                     edge_key = (
                         str(edge.get("source_node_uuid") or ""),
@@ -636,6 +684,7 @@ class GraphBuilder:
                     )
                     if edge_key not in existing_edge_ids:
                         remote_data["edges"].append(edge)
+                        snapshot_edges_added += 1
                 remote_data["node_count"] = len(remote_data["nodes"])
                 remote_data["edge_count"] = len(remote_data["edges"])
                 remote_data["entity_types"] = sorted(
@@ -648,12 +697,36 @@ class GraphBuilder:
                     }
                 )
                 remote_data["source_mode"] = "episodes+snapshot"
+                remote_data["source_breakdown"] = {
+                    "remote_nodes": len(episodes),
+                    "remote_edges": len(remote_data["edges"]) - snapshot_edges_added,
+                    "snapshot_nodes": snapshot_nodes_added,
+                    "snapshot_edges": snapshot_edges_added,
+                    "runtime_nodes": 0,
+                    "runtime_edges": 0,
+                }
             else:
                 remote_data["source_mode"] = "episodes"
+                remote_data["source_breakdown"] = {
+                    "remote_nodes": len(episodes),
+                    "remote_edges": len(remote_data["edges"]),
+                    "snapshot_nodes": 0,
+                    "snapshot_edges": 0,
+                    "runtime_nodes": 0,
+                    "runtime_edges": 0,
+                }
             return remote_data
         snapshot = GraphSnapshotStore.load(graph_id)
         if snapshot:
             snapshot.setdefault("source_mode", "snapshot")
+            snapshot.setdefault("source_breakdown", {
+                "remote_nodes": 0,
+                "remote_edges": 0,
+                "snapshot_nodes": len(snapshot.get("nodes") or []),
+                "snapshot_edges": len(snapshot.get("edges") or []),
+                "runtime_nodes": 0,
+                "runtime_edges": 0,
+            })
             return snapshot
         return {
             "graph_id": graph_id,
@@ -663,6 +736,14 @@ class GraphBuilder:
             "edge_count": 0,
             "entity_types": [],
             "source_mode": "empty",
+            "source_breakdown": {
+                "remote_nodes": 0,
+                "remote_edges": 0,
+                "snapshot_nodes": 0,
+                "snapshot_edges": 0,
+                "runtime_nodes": 0,
+                "runtime_edges": 0,
+            },
         }
 
     def get_graph_info(self, graph_id: str) -> GraphInfo:
