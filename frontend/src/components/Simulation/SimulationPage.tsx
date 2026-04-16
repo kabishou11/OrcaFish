@@ -64,6 +64,8 @@ interface DraftGraphContextSummary {
   }>
 }
 
+type DraftDigestItem = NonNullable<DraftGraphContextSummary['news_digest']>[number]
+
 function normalizeGraphPayload(data?: { nodes?: KGNode[]; edges?: KGLink[]; graph_source_mode?: string; graph_entity_types?: string[]; graph_synced_at?: string | null } | null): GraphPayload {
   return {
     nodes: Array.isArray(data?.nodes) ? data.nodes : [],
@@ -366,12 +368,14 @@ function ReportViewer({
   countryContext,
   graphContext,
   onGraphFocus,
+  onUseDigest,
 }: {
   runId: string
   onClose: () => void
   countryContext?: CountryContextDraftSummary | null
   graphContext?: DraftGraphContextSummary | null
   onGraphFocus?: (request: { kind: 'node' | 'edge'; nodeId?: string; edgeId?: string }) => void
+  onUseDigest?: (item: DraftDigestItem) => void
 }) {
   const [report, setReport] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -788,6 +792,15 @@ function ReportViewer({
                               {item.country ? <span>{item.country}</span> : null}
                               {item.signal_type ? <span>{item.signal_type}</span> : null}
                             </div>
+                            {onUseDigest ? (
+                              <button
+                                type="button"
+                                onClick={() => onUseDigest(item)}
+                                style={{ marginTop: 8, border: 'none', background: 'none', padding: 0, color: 'var(--accent)', fontSize: '0.68rem', cursor: 'pointer', fontWeight: 600 }}
+                              >
+                                带回创建区继续预测
+                              </button>
+                            ) : null}
                           </div>
                         ))}
                       </div>
@@ -949,6 +962,7 @@ export default function SimulationPage() {
   } | null>(null)
   const [persistedCountryContext, setPersistedCountryContext] = useState<CountryContextDraftSummary | null>(null)
   const [persistedGraphContext, setPersistedGraphContext] = useState<DraftGraphContextSummary | null>(null)
+  const seedTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const graphSignatureRef = useRef('')
   const lastGraphRunIdRef = useRef<string | null>(null)
   const lastGraphRefreshKeyRef = useRef(0)
@@ -1355,6 +1369,29 @@ export default function SimulationPage() {
       digestTitle: graphContext?.news_digest?.[0]?.title || '',
     }
   }
+  const handleUseDigestForSeed = useCallback((item: DraftDigestItem) => {
+    const title = String(item.title || '').trim()
+    const summary = String(item.summary || '').trim()
+    const country = String(item.country || draftCountryName || '').trim()
+    const signalType = String(item.signal_type || '').trim()
+    const nextSeed = [title, summary].filter(Boolean).join('\n')
+    const nextRequirementBits = [
+      country ? `围绕${country}` : '',
+      signalType ? `重点追踪${signalType}` : '',
+      '继续预测未来72小时内的关键参与方、传播平台与风险路径演化',
+    ].filter(Boolean)
+
+    setViewMode('split')
+    setConfig((prev) => ({
+      ...prev,
+      seed_content: nextSeed || prev.seed_content,
+      simulation_requirement: nextRequirementBits.join('，') || prev.simulation_requirement,
+    }))
+    setTimeout(() => {
+      seedTextareaRef.current?.focus()
+      seedTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 80)
+  }, [draftCountryName])
   const estimateRemaining = () => {
     if (!selectedRun) return '等待创建预测记录'
     if (selectedRun.status === 'completed' && selectedRun.duration_ms) {
@@ -1878,6 +1915,7 @@ export default function SimulationPage() {
                 <div>
                   <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>议题种子</label>
                   <textarea
+                    ref={seedTextareaRef}
                     value={config.seed_content}
                     onChange={e => setConfig(p => ({ ...p, seed_content: e.target.value }))}
                     placeholder="输入预测议题、报道摘要或来自研判页的综合结论..."
@@ -2231,6 +2269,13 @@ export default function SimulationPage() {
                           {item.country ? <span>{item.country}</span> : null}
                           {item.signal_type ? <span>{item.signal_type}</span> : null}
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => handleUseDigestForSeed(item)}
+                          style={{ marginTop: 8, border: 'none', background: 'none', padding: 0, color: 'var(--accent)', fontSize: '0.68rem', cursor: 'pointer', fontWeight: 600 }}
+                        >
+                          带回创建区继续预测
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -2476,6 +2521,7 @@ export default function SimulationPage() {
           countryContext={draftCountryContext}
           graphContext={draftGraphContext}
           onGraphFocus={focusGraphFromWorkbench}
+          onUseDigest={handleUseDigestForSeed}
         />
       )}
     </div>
