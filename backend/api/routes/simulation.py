@@ -2385,7 +2385,7 @@ async def get_simulation_report(run_id: str) -> dict:
         rows = []
         for name, cl in top_topics:
             heat = "🔥" if int(cl["count"]) >= 5 else "📌"
-            plats = "双平台" if len(cl["platforms"]) > 1 else ("Info Plaza" if "twitter" in cl["platforms"] else "Topic Comm.")
+            plats = "双平台" if len(cl["platforms"]) > 1 else ("信息广场" if "twitter" in cl["platforms"] else "话题社区")
             rows.append(f"<tr><td>{heat} {escape(str(name))}</td><td>{cl['count']}</td><td>{len(cl['agents'])}</td><td>{plats}</td></tr>")
         return "".join(rows)
 
@@ -2407,7 +2407,7 @@ async def get_simulation_report(run_id: str) -> dict:
             belief = belief_map.get(aid, 0.5)
             risk_cls = "high" if belief > 0.65 else ("low" if belief < 0.35 else "")
             dominant_type = max(s["types"], key=s["types"].get) if s["types"] else "—"
-            plat_label = "Info Plaza" if s["platform"] == "twitter" else "Topic Comm."
+            plat_label = "信息广场" if s["platform"] == "twitter" else "话题社区"
             rows.append(
                 f"<tr><td>{escape(s['name'])}</td><td>{plat_label}</td>"
                 f"<td>{s['total']}</td><td>{escape(dominant_type)}</td>"
@@ -2420,7 +2420,7 @@ async def get_simulation_report(run_id: str) -> dict:
             return "<p style='color:#94a3b8'>暂无轮次数据</p>"
         rows = []
         for (rnum, plat), rd in timeline_rows:
-            plat_label = "Info Plaza" if plat == "twitter" else "Topic Comm."
+            plat_label = "信息广场" if plat == "twitter" else "话题社区"
             dominant = max(rd["types"], key=rd["types"].get) if rd["types"] else "—"
             events_str = "；".join(escape(e) for e in rd["events"]) if rd["events"] else "—"
             rows.append(
@@ -2455,9 +2455,9 @@ async def get_simulation_report(run_id: str) -> dict:
         if tw_count > 0 and rd_count > 0:
             ratio = tw_count / max(rd_count, 1)
             if ratio > 3:
-                points.append("Info Plaza 动作量显著高于 Topic Community，舆论扩散以广播式为主，深度讨论相对不足。")
+                points.append("信息广场动作量显著高于话题社区，舆论扩散以广播式为主，深度讨论相对不足。")
             elif ratio < 0.5:
-                points.append("Topic Community 动作量显著高于 Info Plaza，议题正在社区内深度发酵，需关注是否向公共广场溢出。")
+                points.append("话题社区动作量显著高于信息广场，议题正在社区内深度发酵，需关注是否向公共广场溢出。")
         if not points:
             points.append("当前数据量有限，建议在推演完成后重新生成报告以获取更完整的观察点。")
         return "".join(f"<li>{p}</li>" for p in points)
@@ -2596,6 +2596,27 @@ async def get_simulation_report(run_id: str) -> dict:
         graph_id = escape(str(inherited_graph_context.get("graph_id") or "未命名图谱"))
         query_html = _html_list([escape(str(item)) for item in queries[:5]], "没有继承到检索词")
         fact_html = _html_list([escape(str(item)) for item in facts[:4]], "没有继承到事实摘录")
+        edge_rows = []
+        for edge in edges[:6]:
+            edge_rows.append(
+                "<tr>"
+                f"<td>{escape(str(edge.get('source') or '未知节点'))}</td>"
+                f"<td>{escape(str(edge.get('type') or 'related_to'))}</td>"
+                f"<td>{escape(str(edge.get('target') or '未知节点'))}</td>"
+                f"<td>{escape(str(edge.get('fact') or '继承关系'))}</td>"
+                "</tr>"
+            )
+        node_rows = []
+        for node in nodes[:6]:
+            node_rows.append(
+                "<tr>"
+                f"<td>{escape(str(node.get('name') or node.get('id') or '未命名节点'))}</td>"
+                f"<td>{escape(str(node.get('type') or '图谱节点'))}</td>"
+                f"<td>{escape(str(node.get('summary') or '该节点从议题研判阶段继承而来。'))}</td>"
+                "</tr>"
+            )
+        edge_table = "".join(edge_rows) if edge_rows else "<tr><td colspan='4' style='color:#94a3b8'>没有继承到关系结构</td></tr>"
+        node_table = "".join(node_rows) if node_rows else "<tr><td colspan='3' style='color:#94a3b8'>没有继承到节点结构</td></tr>"
         return (
             "<div>"
             "<h2>继承的图谱校准</h2>"
@@ -2606,6 +2627,10 @@ async def get_simulation_report(run_id: str) -> dict:
             "<div class='grid-2'>"
             f"<div><h2>继承检索词</h2><ul>{query_html}</ul></div>"
             f"<div><h2>继承事实</h2><ul>{fact_html}</ul></div>"
+            "</div>"
+            "<div class='grid-2'>"
+            f"<div><h2>继承关系</h2><table><tr><th>源节点</th><th>关系</th><th>目标节点</th><th>说明</th></tr>{edge_table}</table></div>"
+            f"<div><h2>继承节点</h2><table><tr><th>节点</th><th>类型</th><th>摘要</th></tr>{node_table}</table></div>"
             "</div>"
             "</div>"
         )
@@ -2665,15 +2690,15 @@ async def get_simulation_report(run_id: str) -> dict:
     <div class="stats">
       <div class="stat"><div class="stat-val">{len(agents)}</div><div class="stat-lbl">代理体</div></div>
       <div class="stat"><div class="stat-val">{total_actions}</div><div class="stat-lbl">总动作</div></div>
-      <div class="stat"><div class="stat-val">{tw_count}</div><div class="stat-lbl">Info Plaza</div></div>
-      <div class="stat"><div class="stat-val">{rd_count}</div><div class="stat-lbl">Topic Comm.</div></div>
+      <div class="stat"><div class="stat-val">{tw_count}</div><div class="stat-lbl">信息广场</div></div>
+      <div class="stat"><div class="stat-val">{rd_count}</div><div class="stat-lbl">话题社区</div></div>
     </div>
   </div>
   <div class="content">
     <div class="section-card">
       <h2>执行摘要</h2>
-      <p>本轮推演围绕 <strong>{safe_seed}</strong> 展开，Info Plaza / Topic Community 分别推进至 <strong>{tw_max}</strong> / <strong>{rd_max}</strong> 轮，累计形成 <strong>{total_actions}</strong> 条动作记录，覆盖 <strong>{len(agents)}</strong> 个活跃代理体。</p>
-      <p>系统当前<strong>{'已趋于收敛' if convergence else '仍在持续演化'}</strong>，高信念代理体 <span class="high">{len(high_risk)}</span> 个，低信念代理体 <span class="low">{len(low_risk)}</span> 个。Info Plaza 以 <strong>{escape(str(tw_dominant))}</strong> 为主导动作，Topic Community 以 <strong>{escape(str(rd_dominant))}</strong> 为主导动作。</p>
+      <p>本轮推演围绕 <strong>{safe_seed}</strong> 展开，信息广场 / 话题社区 分别推进至 <strong>{tw_max}</strong> / <strong>{rd_max}</strong> 轮，累计形成 <strong>{total_actions}</strong> 条动作记录，覆盖 <strong>{len(agents)}</strong> 个活跃代理体。</p>
+      <p>系统当前<strong>{'已趋于收敛' if convergence else '仍在持续演化'}</strong>，高信念代理体 <span class="high">{len(high_risk)}</span> 个，低信念代理体 <span class="low">{len(low_risk)}</span> 个。信息广场以 <strong>{escape(str(tw_dominant))}</strong> 为主导动作，话题社区以 <strong>{escape(str(rd_dominant))}</strong> 为主导动作。</p>
     </div>
 
     <div class="section-card">
@@ -2760,8 +2785,8 @@ async def get_simulation_report(run_id: str) -> dict:
       <div class="section-card">
         <h2>平台对比</h2>
         <ul>
-          <li>Info Plaza 动作量 <strong>{tw_count}</strong>，主导动作 <strong>{escape(str(tw_dominant))}</strong>，最高轮次 <strong>R{tw_max}</strong></li>
-          <li>Topic Community 动作量 <strong>{rd_count}</strong>，主导动作 <strong>{escape(str(rd_dominant))}</strong>，最高轮次 <strong>R{rd_max}</strong></li>
+          <li>信息广场动作量 <strong>{tw_count}</strong>，主导动作 <strong>{escape(str(tw_dominant))}</strong>，最高轮次 <strong>R{tw_max}</strong></li>
+          <li>话题社区动作量 <strong>{rd_count}</strong>，主导动作 <strong>{escape(str(rd_dominant))}</strong>，最高轮次 <strong>R{rd_max}</strong></li>
           <li>双平台动作量比约为 <strong>{(tw_count / max(rd_count, 1)):.2f}</strong> : 1</li>
         </ul>
       </div>

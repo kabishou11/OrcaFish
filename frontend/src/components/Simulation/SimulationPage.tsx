@@ -4,6 +4,7 @@ import GraphPanel from './GraphPanel'
 import { useSimulationDraftStore, type SimulationDraft } from '../../stores/simulationDraftStore'
 import WorkflowGuide, { type WorkflowGuideStep } from '../WorkflowGuide'
 import CountryWorkbenchCard from '../CountryWorkbenchCard'
+import useViewportMatch from '../../hooks/useViewportMatch'
 
 
 interface SimulationRun {
@@ -441,6 +442,8 @@ function ReportViewer({
     { label: '关系', value: graphContext?.graph_edges?.length ?? 0 },
     { label: '节点', value: graphContext?.graph_nodes?.length ?? 0 },
   ]
+  const topInheritedEdges = (graphContext?.graph_edges ?? []).slice(0, 3)
+  const topInheritedNodes = (graphContext?.graph_nodes ?? []).slice(0, 3)
 
   return (
     <div className="report-drawer-overlay" onClick={onClose}>
@@ -646,7 +649,7 @@ function ReportViewer({
                     padding: '14px 16px',
                   }}>
                     <div style={{ fontSize: '0.68rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.08em', marginBottom: 8 }}>
-                      OBSERVATION PACKAGE CONTEXT
+                      观察包上下文
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                       <div>
@@ -731,6 +734,48 @@ function ReportViewer({
                         <strong style={{ color: 'var(--text-primary)' }}>继承事实：</strong>{graphContext.graph_facts.slice(0, 2).join('；')}
                       </div>
                     ) : null}
+                    {(topInheritedEdges.length > 0 || topInheritedNodes.length > 0) ? (
+                      <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
+                            继承关系
+                          </div>
+                          {topInheritedEdges.length ? topInheritedEdges.map((edge, index) => (
+                            <div key={`${edge.source || 'src'}-${edge.target || 'tgt'}-${index}`} style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(124,58,237,0.1)', background: 'rgba(255,255,255,0.92)' }}>
+                              <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
+                                {(edge.source || '未知节点')} → {(edge.target || '未知节点')}
+                              </div>
+                              <div style={{ fontSize: '0.68rem', color: '#7c3aed', marginBottom: 4 }}>{edge.type || 'related_to'}</div>
+                              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                {edge.fact || '该关系从议题研判图谱校准阶段继承而来。'}
+                              </div>
+                            </div>
+                          )) : (
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>还没有继承到关系结构。</div>
+                          )}
+                        </div>
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
+                            继承节点
+                          </div>
+                          {topInheritedNodes.length ? topInheritedNodes.map((node, index) => (
+                            <div key={`${node.id || node.name || 'node'}-${index}`} style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(124,58,237,0.1)', background: 'rgba(255,255,255,0.92)' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+                                <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                                  {node.name || node.id || '未命名节点'}
+                                </div>
+                                <div style={{ fontSize: '0.66rem', color: '#16a34a' }}>{node.type || '图谱节点'}</div>
+                              </div>
+                              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                {node.summary || '该节点从议题研判图谱校准阶段继承而来。'}
+                              </div>
+                            </div>
+                          )) : (
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>还没有继承到节点结构。</div>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 )}
                 <div
@@ -796,6 +841,9 @@ type SimulationDraftWithCountryContext = SimulationDraft & {
 const RUNS_COLLAPSED_LIMIT = 6
 
 export default function SimulationPage() {
+  const isCompact = useViewportMatch(1360)
+  const isMedium = useViewportMatch(1160)
+  const isNarrow = useViewportMatch(860)
   const draft = useSimulationDraftStore((s) => s.draft)
   const clearDraft = useSimulationDraftStore((s) => s.clearDraft)
   const [runs, setRuns] = useState<SimulationRun[]>([])
@@ -1257,7 +1305,9 @@ export default function SimulationPage() {
   const rightPaneVisible = viewMode !== 'graph'
   const graphPaneColumns = viewMode === 'graph'
     ? 'minmax(0, 1fr)'
-    : viewMode === 'workbench'
+    : isMedium
+      ? '1fr'
+      : viewMode === 'workbench'
       ? 'minmax(320px, 0.92fr) minmax(320px, 1.08fr)'
       : '240px minmax(0, 1.72fr) 320px'
   const activeModeMeta = {
@@ -1358,7 +1408,7 @@ export default function SimulationPage() {
       </div>
 
       <WorkflowGuide
-        eyebrow="FUTURE FORECAST FLOW"
+        eyebrow="未来预测流程"
         title="先建记录，再启动预测，再读未来路径"
         description="先把议题输入固化成预测记录，再启动推演，随后结合图谱、行动流和报告持续检查未来路径。"
         steps={workflowSteps}
@@ -1382,7 +1432,7 @@ export default function SimulationPage() {
 
       {/* ── Control Bar ─────────────────────────────────────────── */}
       <div className="panel" style={{ padding: 'var(--sp-4) var(--sp-5)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--sp-4)' }}>
+        <div style={{ display: 'flex', alignItems: isNarrow ? 'stretch' : 'center', justifyContent: 'space-between', gap: 'var(--sp-4)', flexWrap: 'wrap' }}>
           {/* Left: selected run info */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', minWidth: 0 }}>
             {selectedRun ? (
@@ -1478,7 +1528,7 @@ export default function SimulationPage() {
               paddingTop: 'var(--sp-4)',
               borderTop: '1px solid var(--border)',
               display: 'grid',
-              gridTemplateColumns: hasCountryContext ? '1.1fr 0.95fr 0.95fr 120px' : '1.2fr 1fr 120px',
+              gridTemplateColumns: isNarrow ? '1fr' : isCompact ? '1.1fr 1fr' : hasCountryContext ? '1.1fr 0.95fr 0.95fr 120px' : '1.2fr 1fr 120px',
               gap: 'var(--sp-3)',
               alignItems: 'center',
             }}>
@@ -1560,7 +1610,7 @@ export default function SimulationPage() {
       </div>
 
       {/* ── Workflow Steps ─────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : isCompact ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))', gap: 'var(--sp-3)' }}>
         {[
           {
             key: 'step-1',
@@ -1629,7 +1679,7 @@ export default function SimulationPage() {
       </div>
 
       {/* ── Main Layout: 280px left (controls) | 1fr center (graph) | 300px right (status) ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: graphPaneColumns, gap: 'var(--sp-4)', alignItems: 'start', minHeight: viewMode === 'graph' ? 820 : 780 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: graphPaneColumns, gap: 'var(--sp-4)', alignItems: 'start', minHeight: isMedium ? 'auto' : viewMode === 'graph' ? 820 : 780 }}>
 
         {/* ── Left: Controls + Runs ────────────────────────────────── */}
         {leftPaneVisible && (
@@ -2417,6 +2467,40 @@ const reportDrawerCSS = `
     min-height: 200px;
     padding: var(--sp-8);
     text-align: center;
+  }
+
+  @media (max-width: 960px) {
+    .report-drawer-header {
+      padding: var(--sp-3) var(--sp-4);
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+
+    .report-drawer-body {
+      flex-direction: column;
+    }
+
+    .report-section-nav {
+      width: 100%;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+      max-height: 220px;
+    }
+
+    .report-content-area {
+      padding: var(--sp-4);
+    }
+  }
+
+  @media (max-width: 640px) {
+    .report-content-area {
+      padding: var(--sp-3);
+    }
+
+    .report-section-btn {
+      padding: 9px var(--sp-3);
+      font-size: 0.76rem;
+    }
   }
 
   @keyframes fade-in {

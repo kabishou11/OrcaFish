@@ -233,6 +233,12 @@ code, pre { font-family: var(--font-mono); }
   overflow-y: auto;
 }
 
+@media (max-width: 860px) {
+  .app-main {
+    padding: var(--sp-4);
+  }
+}
+
 /* ── Page Headers ────────────────────────────────────────────────────── */
 .page-header {
   display: flex;
@@ -240,6 +246,14 @@ code, pre { font-family: var(--font-mono); }
   justify-content: space-between;
   margin-bottom: var(--sp-6);
   gap: var(--sp-4);
+}
+
+@media (max-width: 860px) {
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+    margin-bottom: var(--sp-4);
+  }
 }
 
 .page-title {

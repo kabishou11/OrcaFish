@@ -124,6 +124,8 @@ async def _run_smoke() -> None:
         assert "继承的图谱校准" in report["html_content"]
         assert "伊朗" in report["html_content"]
         assert "analysis-graph-1" in report["html_content"]
+        assert "继承关系" in report["html_content"]
+        assert "继承节点" in report["html_content"]
 
         original_seed = run["seed_content"]
         _run_registry[run["run_id"]]["seed_content"] = "tampered-seed"
